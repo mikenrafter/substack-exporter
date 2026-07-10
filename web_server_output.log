@@ -334,3 +334,102 @@ Open http://127.0.0.1:5000 in your browser
 127.0.0.1 - - [10/Jul/2026 16:52:12] "GET /substack_html_pages/thmueller/..../substack_images/thmueller/demystifying-tokenization-of-assets/ddabbc1c-01f0-467a-89d3-ef2b34780617_800x1200.jpeg HTTP/1.1" 404 -
 127.0.0.1 - - [10/Jul/2026 16:52:12] "GET /substack_html_pages/thmueller/..../substack_images/thmueller/demystifying-tokenization-of-assets/bb17e179-baad-4ccf-a38b-9bec938e3e03_800x1200.jpeg HTTP/1.1" 404 -
 127.0.0.1 - - [10/Jul/2026 16:52:12] "GET /substack_html_pages/thmueller/..../substack_images/thmueller/demystifying-tokenization-of-assets/f9cb2598-aebc-433a-a853-05c1bd7bc38f_1200x800.png HTTP/1.1" 404 -
+ * Detected change in 'd:\\4Project\\substack-exporter\\_check_note.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\_check_video4.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\substack_scraper.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+ * Detected change in 'd:\\4Project\\substack-exporter\\web_server.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+127.0.0.1 - - [10/Jul/2026 17:19:19] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:19:19] "GET /static/css/web-ui.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:19:19] "GET /static/js/web-ui.js HTTP/1.1" 304 -
+ * Detected change in 'd:\\4Project\\substack-exporter\\web_server.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643

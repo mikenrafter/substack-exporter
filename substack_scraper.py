@@ -40,6 +40,7 @@ BASE_SUBSTACK_URL: str = "https://niallferguson.substack.com/"
 BASE_MD_DIR: str = "substack_md_files"
 BASE_HTML_DIR: str = "substack_html_pages"
 BASE_IMAGE_DIR: str = "substack_images"
+BASE_VIDEO_DIR: str = "substack_videos"
 HTML_TEMPLATE: str = "author_template.html"
 JSON_DATA_DIR: str = "data"
 NUM_POSTS_TO_SCRAPE: int = 0
@@ -184,6 +185,141 @@ def process_markdown_images(md_content: str, author: str, post_slug: str, pbar=N
 
     pattern = r'\(https://substackcdn\.com/image/fetch/[^\s\)]+\)'
     return re.sub(pattern, replace_image, md_content)
+
+
+# =============================================================================
+# VIDEO DOWNLOADING
+# =============================================================================
+
+def detect_videos_from_soup(soup: BeautifulSoup) -> list:
+    """
+    Detect <video> tags in a page and extract video IDs from poster URLs.
+    Returns list of (video_id, poster_url) tuples.
+    """
+    videos = []
+    for v in soup.find_all('video'):
+        poster = v.get('poster', '')
+        # poster pattern: .../video_upload/user/{user_id}/{video_id}/transcoded-00001.png
+        match = re.search(r'/video_upload/user/\d+/([a-f0-9-]+)/', poster)
+        if match:
+            video_id = match.group(1)
+            if video_id not in [vid for vid, _ in videos]:
+                videos.append((video_id, poster))
+    return videos
+
+
+def get_video_stream_url(video_id: str, cookies: dict = None, timeout: int = 15) -> str:
+    """
+    Call Substack's video API to get a signed Mux HLS stream URL.
+    Requires authentication cookies from a logged-in session.
+    Returns the Mux master playlist URL, or empty string on failure.
+    """
+    api_url = f'https://substack.com/api/v1/video/upload/{video_id}/src?type=hls'
+    try:
+        resp = requests.get(
+            api_url,
+            cookies=cookies or {},
+            headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'https://substack.com/',
+            },
+            allow_redirects=True,
+            timeout=timeout,
+        )
+        final_url = resp.url
+        if 'stream.mux.com' in final_url and '.m3u8' in final_url:
+            return final_url
+    except Exception as e:
+        print(f'  [VIDEO] Failed to get stream URL for {video_id}: {e}')
+    return ''
+
+
+def download_hls_video(stream_url: str, output_path: str, pbar=None) -> bool:
+    """
+    Download an HLS video stream (Mux master playlist) to an MP4 file.
+    
+    1. Parse master playlist → pick best quality rendition
+    2. Parse rendition playlist → download all TS segments
+    3. Concatenate TS segments into a single .mp4 file
+    
+    Returns True on success, False on failure.
+    """
+    try:
+        import m3u8  # lazy import
+    except ImportError:
+        if pbar:
+            pbar.write('[VIDEO] m3u8 library not installed. Run: pip install m3u8')
+        else:
+            print('[VIDEO] m3u8 library not installed. Run: pip install m3u8')
+        return False
+
+    try:
+        # Step 1: fetch master playlist
+        playlist = m3u8.load(stream_url, timeout=30)
+        
+        # Step 2: pick best quality rendition
+        if not playlist.playlists:
+            if pbar:
+                pbar.write('[VIDEO] No renditions found in master playlist')
+            return False
+
+        best = max(playlist.playlists, key=lambda p: p.stream_info.bandwidth or 0)
+        rendition_url = best.absolute_uri
+        
+        if pbar:
+            resolution = best.stream_info.resolution or '?x?'
+            pbar.write(f'[VIDEO] Selected: {resolution[0]}x{resolution[1]} @ {best.stream_info.bandwidth} bps')
+        
+        # Step 3: fetch rendition playlist (TS segments)
+        rendition = m3u8.load(rendition_url, timeout=30)
+        
+        if not rendition.segments:
+            if pbar:
+                pbar.write('[VIDEO] No segments in rendition playlist')
+            return False
+
+        # Step 4: download all TS segments
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        
+        temp_dir = output_path + '.tmp'
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        segment_files = []
+        total = len(rendition.segments)
+        
+        for i, seg in enumerate(rendition.segments):
+            seg_url = seg.absolute_uri
+            seg_path = os.path.join(temp_dir, f'seg_{i:05d}.ts')
+            
+            if not os.path.exists(seg_path):
+                r = requests.get(seg_url, timeout=60, stream=True)
+                r.raise_for_status()
+                with open(seg_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            segment_files.append(seg_path)
+            if pbar:
+                pbar.update(1)
+
+        # Step 5: concatenate TS segments (TS files can be concatenated directly)
+        with open(output_path, 'wb') as outfile:
+            for seg_path in segment_files:
+                with open(seg_path, 'rb') as infile:
+                    outfile.write(infile.read())
+
+        # Cleanup temp directory
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        return True
+
+    except Exception as e:
+        if pbar:
+            pbar.write(f'[VIDEO] Download failed: {e}')
+        else:
+            print(f'[VIDEO] Download failed: {e}')
+        return False
 
 
 def extract_main_part(url: str) -> str:
@@ -778,10 +914,12 @@ class BaseSubstackScraper(ABC):
         html_save_dir: str,
         download_images: bool = False,
         frontmatter_format: str = "legacy",
+        download_videos: bool = False,
     ):
         if frontmatter_format not in ("legacy", "mdx"):
             raise ValueError("frontmatter_format must be 'legacy' or 'mdx'")
         self.frontmatter_format: str = frontmatter_format
+        self.download_videos: bool = download_videos
 
         # Resolve redirects for short-links like /home/post/p-XXXXXX
         resolved_url = resolve_redirect_url(base_substack_url)
@@ -1170,6 +1308,10 @@ class BaseSubstackScraper(ABC):
     def get_url_soup(self, url: str) -> str:
         raise NotImplementedError
 
+    def _get_auth_cookies(self) -> Optional[dict]:
+        """Return authentication cookies for API calls. Override in premium scraper."""
+        return None
+
     def save_essays_data_to_json(self, essays_data: list) -> None:
         """Saves essays data to a JSON file for a specific author."""
         data_dir = os.path.join(JSON_DATA_DIR)
@@ -1229,6 +1371,36 @@ class BaseSubstackScraper(ABC):
                             ) as img_pbar:
                                 md = process_markdown_images(md, self.writer_name, slug, img_pbar)
 
+                        if self.download_videos:
+                            slug = get_post_slug(url) if is_post_url(url) else url.rstrip('/').split('/')[-1]
+                            videos = detect_videos_from_soup(soup)
+                            if videos:
+                                auth_cookies = self._get_auth_cookies()
+                                for video_id, poster in videos:
+                                    video_dir = os.path.join(BASE_VIDEO_DIR, self.writer_name, slug)
+                                    video_path = os.path.join(video_dir, f'{video_id}.mp4')
+                                    if os.path.exists(video_path):
+                                        pbar.write(f'[VIDEO] Already exists: {video_path}')
+                                        continue
+                                    pbar.write(f'[VIDEO] Fetching stream for {video_id}...')
+                                    stream_url = get_video_stream_url(video_id, auth_cookies)
+                                    if not stream_url:
+                                        pbar.write(f'[VIDEO] Failed to get stream for {video_id} (login required)')
+                                        continue
+                                    os.makedirs(video_dir, exist_ok=True)
+                                    total_segs_est = 50  # rough estimate for progress bar
+                                    with tqdm(
+                                        total=total_segs_est,
+                                        desc=f'Downloading video {video_id[:8]}...',
+                                        leave=False,
+                                    ) as vid_pbar:
+                                        success = download_hls_video(stream_url, video_path, vid_pbar)
+                                    if success:
+                                        file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+                                        pbar.write(f'[VIDEO] Saved: {video_path} ({file_size_mb:.1f} MB)')
+                                    else:
+                                        pbar.write(f'[VIDEO] Failed: {video_id}')
+
                         self.save_to_file(md_filepath, md)
                         html_content = self.md_to_html(md)
                         self.save_to_html_file(html_filepath, html_content)
@@ -1268,9 +1440,10 @@ class SubstackScraper(BaseSubstackScraper):
         html_save_dir: str,
         download_images: bool = False,
         frontmatter_format: str = "legacy",
+        download_videos: bool = False,
     ):
         super().__init__(
-            base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format
+            base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format, download_videos
         )
 
     def get_url_soup(self, url: str, max_attempts: int = 5) -> Optional[BeautifulSoup]:
@@ -1322,6 +1495,7 @@ class PremiumSubstackScraper(BaseSubstackScraper):
         use_persistent_profile: bool = False,
         skip_login: bool = False,
         frontmatter_format: str = "legacy",
+        download_videos: bool = False,
     ) -> None:
         """
         Initialize the premium scraper with browser automation.
@@ -1360,8 +1534,18 @@ class PremiumSubstackScraper(BaseSubstackScraper):
             sleep(3)
 
         super().__init__(
-            base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format
+            base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format, download_videos
         )
+
+    def _get_auth_cookies(self) -> dict:
+        """Extract cookies from Selenium driver for authenticated API calls."""
+        try:
+            cookies = {}
+            for c in self.driver.get_cookies():
+                cookies[c['name']] = c['value']
+            return cookies
+        except Exception:
+            return {}
 
     def login(self) -> None:
         """Log into Substack using Selenium — with robust selectors and manual fallback."""
@@ -1639,6 +1823,11 @@ Examples:
         help="Download images and update markdown to use local paths."
     )
     parser.add_argument(
+        "--videos",
+        action="store_true",
+        help="Download videos from posts/notes. Requires --premium (authentication needed)."
+    )
+    parser.add_argument(
         "--frontmatter", type=str, default="legacy", choices=["legacy", "mdx"],
         help="Header format for scraped markdown. 'legacy' (default) uses the original "
              "'# title / **date** / **Likes:** N' block. 'mdx' emits YAML frontmatter "
@@ -1726,6 +1915,7 @@ def main():
                 use_persistent_profile=args.persistent_profile,
                 skip_login=args.skip_login,
                 frontmatter_format=args.frontmatter,
+                download_videos=args.videos,
             )
         else:
             scraper = SubstackScraper(
@@ -1734,6 +1924,7 @@ def main():
                 html_save_dir=args.html_directory,
                 download_images=args.images,
                 frontmatter_format=args.frontmatter,
+                download_videos=args.videos,
             )
         scraper.scrape_posts(args.number)
 
@@ -1753,6 +1944,7 @@ def main():
                 use_persistent_profile=args.persistent_profile,
                 skip_login=args.skip_login,
                 frontmatter_format=args.frontmatter,
+                download_videos=args.videos,
             )
         else:
             scraper = SubstackScraper(
@@ -1761,6 +1953,7 @@ def main():
                 html_save_dir=args.html_directory,
                 download_images=args.images,
                 frontmatter_format=args.frontmatter,
+                download_videos=args.videos,
             )
         scraper.scrape_posts(num_posts_to_scrape=NUM_POSTS_TO_SCRAPE)
 

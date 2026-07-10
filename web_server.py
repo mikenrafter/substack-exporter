@@ -120,6 +120,9 @@ def run_scrape_job(job_id, params):
         if params.get('images'):
             cmd.append('--images')
 
+        if params.get('videos'):
+            cmd.append('--videos')
+
         if params.get('frontmatter') == 'mdx':
             cmd.extend(['--frontmatter', 'mdx'])
 
@@ -368,6 +371,12 @@ def index():
     return render_template('index.html', exports=exports)
 
 
+@app.route('/favicon.ico')
+def favicon():
+    """Serve the project favicon."""
+    return send_from_directory(BASE_DIR, 'favicon.ico')
+
+
 @app.route('/api/scrape', methods=['POST'])
 def api_scrape():
     data = request.get_json(silent=True)
@@ -389,6 +398,7 @@ def api_scrape():
         'number': int(data.get('number', 0) or 0),
         'premium': bool(data.get('premium', False)),
         'images': bool(data.get('images', False)),
+        'videos': bool(data.get('videos', False)),
         'frontmatter': data.get('frontmatter', 'legacy'),
         'browser': data.get('browser', 'chrome'),
     }

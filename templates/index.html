@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Substack Exporter</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="stylesheet" href="/static/css/web-ui.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -92,6 +93,15 @@
       <div class="premium-options" id="premiumOptions" hidden>
         <div class="premium-options-inner">
           <p class="premium-note" data-i18n="premiumNote">First-time? Click "Login" to open a browser and sign in. Subsequent runs reuse the saved session.</p>
+          <div class="form-toggles" style="margin-bottom:12px">
+            <label class="toggle">
+              <input type="checkbox" id="scrapeVideos">
+              <span class="toggle-track">
+                <span class="toggle-knob"></span>
+              </span>
+              <span class="toggle-label" data-i18n="videos">Download videos</span>
+            </label>
+          </div>
           <div class="form-row" style="margin-bottom:12px">
             <div class="form-group flex-1" style="margin-bottom:0">
               <label for="scrapeBrowser" data-i18n="browserLabel">Browser</label>

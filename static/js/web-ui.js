@@ -20,6 +20,7 @@ const I18N = {
     fmtMdx: 'MDX（YAML）',
     premium: '付费内容',
     images: '下载图片',
+    videos: '下载视频（需付费内容）',
     premiumNote: '首次使用？先点「登录」打开浏览器完成登录，后续抓取自动复用登录态。',
     browserLabel: '浏览器',
     loginBtn: '登录 / 设置 Profile',
@@ -53,6 +54,7 @@ const I18N = {
     fmtMdx: 'MDX (YAML)',
     premium: 'Premium content',
     images: 'Download images',
+    videos: 'Download videos (premium required)',
     premiumNote: 'First time? Click "Login" to open a browser and sign in. Subsequent runs reuse the saved session.',
     browserLabel: 'Browser',
     loginBtn: 'Login / Setup Profile',
@@ -109,6 +111,7 @@ const scrapeNumber  = $('#scrapeNumber');
 const scrapeFmt     = $('#scrapeFrontmatter');
 const scrapePremium = $('#scrapePremium');
 const scrapeImages  = $('#scrapeImages');
+const scrapeVideos  = $('#scrapeVideos');
 const scrapeBrowser = $('#scrapeBrowser');
 const startBtn      = $('#startBtn');
 const statusArea    = $('#statusArea');
@@ -137,6 +140,9 @@ function init() {
   // Premium toggle
   scrapePremium.addEventListener('change', () => {
     premiumOpts.hidden = !scrapePremium.checked;
+    if (!scrapePremium.checked) {
+      scrapeVideos.checked = false;
+    }
   });
 
   // Language switch
@@ -187,6 +193,7 @@ async function startScrape() {
     number: parseInt(scrapeNumber.value, 10) || 0,
     premium: scrapePremium.checked,
     images: scrapeImages.checked,
+    videos: scrapeVideos.checked,
     frontmatter: scrapeFmt.value,
     browser: scrapeBrowser.value,
   };

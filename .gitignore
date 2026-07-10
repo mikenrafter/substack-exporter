@@ -23,3 +23,5 @@ substack_html_pages/*
 
 # Ignore downloaded image assets
 substack_images/
+
+substack_videos/
