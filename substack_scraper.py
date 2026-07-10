@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from typing import List, Optional, Tuple
-from time import sleep
+from time import sleep, time
 
 import html2text
 import markdown
@@ -24,6 +24,7 @@ from xml.etree import ElementTree as ET
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -42,6 +43,43 @@ BASE_IMAGE_DIR: str = "substack_images"
 HTML_TEMPLATE: str = "author_template.html"
 JSON_DATA_DIR: str = "data"
 NUM_POSTS_TO_SCRAPE: int = 0
+
+
+def resolve_redirect_url(url: str, timeout: int = 10) -> str:
+    """
+    Resolve Substack short-links (e.g. /home/post/p-191883775) to the canonical
+    publication post URL by following HTTP redirects.
+
+    Also handles case where a Substack publication has a custom domain that
+    redirects to its substack.com subdomain.
+
+    Returns the original URL if no redirect is detected or the domain is not
+    a known short-link pattern.
+    """
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+
+    # Only resolve for Substack short-link patterns:
+    #   - substack.com (main domain, not a publication subdomain)
+    #   - www.substack.com
+    #   - open.substack.com
+    #   - Any URL containing /home/post/ or /redirect/ patterns
+    is_substack_main = host in ('substack.com', 'www.substack.com', 'open.substack.com')
+    has_short_pattern = '/home/post/' in url or '/redirect/' in url
+
+    if not (is_substack_main or has_short_pattern):
+        return url
+
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=timeout,
+                             headers={'User-Agent': 'Mozilla/5.0'})
+        final_url = resp.url
+        if final_url.rstrip('/') != url.rstrip('/'):
+            if 'substack.com' in final_url:
+                return final_url
+    except Exception:
+        pass
+    return url
 
 
 def resolve_image_url(url: str) -> str:
@@ -744,6 +782,13 @@ class BaseSubstackScraper(ABC):
         if frontmatter_format not in ("legacy", "mdx"):
             raise ValueError("frontmatter_format must be 'legacy' or 'mdx'")
         self.frontmatter_format: str = frontmatter_format
+
+        # Resolve redirects for short-links like /home/post/p-XXXXXX
+        resolved_url = resolve_redirect_url(base_substack_url)
+        if resolved_url != base_substack_url:
+            print(f"[INFO] Resolved {base_substack_url} -> {resolved_url}")
+            base_substack_url = resolved_url
+
         self.is_single_post: bool = is_post_url(base_substack_url)
         self.post_slug: Optional[str] = get_post_slug(base_substack_url) if self.is_single_post else None
         original_url = base_substack_url
@@ -1319,46 +1364,181 @@ class PremiumSubstackScraper(BaseSubstackScraper):
         )
 
     def login(self) -> None:
-        """Log into Substack using Selenium."""
+        """Log into Substack using Selenium — with robust selectors and manual fallback."""
         print("Logging into Substack...")
         self.driver.get("https://substack.com/sign-in")
-        sleep(3)
 
-        signin_with_password = self.driver.find_element(
-            By.XPATH, "//a[@class='login-option substack-login__login-option']"
-        )
-        signin_with_password.click()
-        sleep(3)
+        # ---- Step 1: click "Sign in with password" ----
+        signin_selectors = [
+            # text-based (most robust)
+            "//a[contains(text(),'Sign in with password')]",
+            "//a[contains(text(),'sign in with password')]",
+            "//button[contains(text(),'Sign in with password')]",
+            # class-based fallbacks (legacy + current)
+            "//a[contains(@class,'login-option')]",
+            "//a[@data-testid='login-with-password']",
+            "//div[contains(@class,'login-option')]//a",
+            # any element with recognizable text
+            "//*[contains(text(),'password') and contains(@class,'login')]",
+        ]
+        clicked_signin = self._try_click(signin_selectors, "Sign in with password", timeout=10)
+        if not clicked_signin:
+            print("[WARN] Could not find 'Sign in with password' button — "
+                  "assuming single-step login form (email already visible).")
 
-        email = self.driver.find_element(By.NAME, "email")
-        password = self.driver.find_element(By.NAME, "password")
-        email.send_keys(EMAIL)
-        password.send_keys(PASSWORD)
-
-        submit = self.driver.find_element(By.XPATH, "//*[@id=\"substack-login\"]/div[2]/div[2]/form/button")
-        submit.click()
-        
-        print("Waiting for login to complete (this may take up to 30 seconds)...")
-        sleep(30)
-
-        if self.is_login_failed():
-            raise Exception(
-                "Login unsuccessful. Please check your email and password, or your account status.\n"
-                "If you're seeing a CAPTCHA, try:\n"
-                "  1. Run without --headless to complete CAPTCHA manually\n"
-                "  2. Use --persistent-profile to save your session\n"
-                "  3. Then run with --skip-login on subsequent runs"
+        # ---- Step 2: fill credentials ----
+        try:
+            WebDriverWait(self.driver, 10).until(
+                lambda d: d.find_element(By.NAME, "email") or d.find_element(By.CSS_SELECTOR, "input[type='email']")
             )
-        
-        print("[OK] Login successful!")
-        
-        if self.use_persistent_profile:
-            print("[OK] Session saved to persistent profile")
+        except Exception:
+            pass
 
-    def is_login_failed(self) -> bool:
-        """Check for the presence of the 'error-container' to indicate a failed login."""
-        error_container = self.driver.find_elements(By.ID, 'error-container')
-        return len(error_container) > 0 and error_container[0].is_displayed()
+        email_input = self._find_any([
+            (By.NAME, "email"),
+            (By.CSS_SELECTOR, "input[type='email']"),
+            (By.CSS_SELECTOR, "input[name='email']"),
+            (By.XPATH, "//input[@placeholder='email' or contains(@placeholder,'Email')]"),
+        ])
+        pwd_input = self._find_any([
+            (By.NAME, "password"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+            (By.CSS_SELECTOR, "input[name='password']"),
+            (By.XPATH, "//input[@placeholder='password' or contains(@placeholder,'Password')]"),
+        ])
+
+        if not email_input or not pwd_input:
+            # Selectors completely failed — fall back to manual login
+            if not self._is_headless():
+                print("[MANUAL] Could not locate login form fields automatically.")
+                if self._manual_login_fallback():
+                    return
+            raise Exception(
+                "Could not locate email/password fields on the Substack login page.\n"
+                "The page structure may have changed. Try running without --headless\n"
+                "so you can log in manually in the browser window."
+            )
+
+        email_input.clear()
+        email_input.send_keys(EMAIL)
+        pwd_input.clear()
+        pwd_input.send_keys(PASSWORD)
+
+        # ---- Step 3: submit ----
+        submit_selectors = [
+            "//button[contains(text(),'Sign in')]",
+            "//button[contains(text(),'Log in')]",
+            "//button[@type='submit']",
+            "//button[contains(@class,'submit')]",
+            "//*[@id='substack-login']//button",
+            "//form//button[last()]",
+        ]
+        if not self._try_click(submit_selectors, "submit button", timeout=5):
+            # Try submitting via Enter on password field
+            pwd_input.send_keys(Keys.RETURN)
+
+        # ---- Step 4: wait for login result ----
+        print("Waiting for login to complete (up to 30 seconds)...")
+        login_ok = self._wait_for_login(timeout=30)
+
+        if login_ok:
+            print("[OK] Login successful!")
+            if self.use_persistent_profile:
+                print("[OK] Session saved to persistent profile")
+            return
+
+        # ---- Step 5: automated login failed -> manual fallback ----
+        if not self._is_headless():
+            print("[MANUAL] Automated login failed. You have 120 seconds to log in manually...")
+            if self._manual_login_fallback():
+                return
+
+        raise Exception(
+            "Login unsuccessful. Please check your email and password, or your account status.\n"
+            "If you're seeing a CAPTCHA, try:\n"
+            "  1. Run without --headless to complete CAPTCHA manually\n"
+            "  2. Use --persistent-profile to save your session\n"
+            "  3. Then run with --skip-login on subsequent runs"
+        )
+
+    # ------------------------------------------------------------------
+    # Login helpers
+    # ------------------------------------------------------------------
+
+    def _is_headless(self) -> bool:
+        """Return True if the browser is running in headless mode."""
+        try:
+            return 'headless' in self.driver.execute_script("return navigator.webdriver") or False
+        except Exception:
+            try:
+                args = self.driver.capabilities.get('goog:chromeOptions', {}).get('args', [])
+                return '--headless' in str(args)
+            except Exception:
+                return False
+
+    def _find_any(self, selectors):
+        """Try multiple By-selector tuples and return the first match, or None."""
+        for by, selector in selectors:
+            try:
+                el = self.driver.find_element(by, selector)
+                if el and el.is_displayed():
+                    return el
+            except Exception:
+                continue
+        return None
+
+    def _try_click(self, xpaths, description, timeout=10):
+        """Try each XPath; click the first visible match. Return True on success."""
+        end = time() + timeout
+        while time() < end:
+            for xpath in xpaths:
+                try:
+                    el = self.driver.find_element(By.XPATH, xpath)
+                    if el.is_displayed():
+                        el.click()
+                        return True
+                except Exception:
+                    continue
+            sleep(0.5)
+        print(f"[WARN] Could not find clickable: {description}")
+        return False
+
+    def _wait_for_login(self, timeout=30):
+        """Wait for the URL to leave the sign-in page. Return True if login succeeded."""
+        end = time() + timeout
+        while time() < end:
+            sleep(1)
+            current_url = self.driver.current_url
+            # If we've left the sign-in page, we're likely logged in
+            if '/sign-in' not in current_url and '/login' not in current_url:
+                return True
+            # Check for error messages
+            try:
+                error = self.driver.find_element(By.CSS_SELECTOR, '[role="alert"], .error-message, #error-container')
+                if error.is_displayed():
+                    return False
+            except Exception:
+                pass
+        return False
+
+    def _manual_login_fallback(self, timeout=120):
+        """Let the user manually log in. Return True if login succeeded, False if timed out."""
+        print(f"[MANUAL] Please log in manually in the browser window within {timeout} seconds...")
+        print("[MANUAL] After logging in, just wait — we'll detect it automatically.")
+        end = time() + timeout
+        while time() < end:
+            sleep(2)
+            current_url = self.driver.current_url
+            if ('substack.com' in current_url
+                    and '/sign-in' not in current_url
+                    and '/login' not in current_url
+                    and current_url != 'about:blank'):
+                print("[MANUAL] Login detected! Continuing...")
+                if self.use_persistent_profile:
+                    print("[OK] Session saved to persistent profile")
+                return True
+        print("[MANUAL] Manual login timed out.")
+        return False
 
     def get_url_soup(self, url: str, max_attempts: int = 5) -> Optional[BeautifulSoup]:
         """Gets soup from URL using logged-in Selenium driver, with retry on rate limiting."""

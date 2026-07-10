@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Substack Exporter</title>
+  <link rel="stylesheet" href="/static/css/web-ui.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- ====== NAV ====== -->
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="nav-brand">
+      <span class="brand-icon">◆</span>
+      <span data-i18n="appName">Substack Exporter</span>
+    </div>
+    <div class="nav-actions">
+      <a href="https://github.com/timf34/Substack2Markdown" target="_blank" class="nav-link" data-i18n="github">GitHub</a>
+      <button class="lang-switch" id="langToggle" aria-label="Switch language">
+        <span class="lang-option" data-lang="zh">中</span>
+        <span class="lang-divider">/</span>
+        <span class="lang-option active" data-lang="en">EN</span>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- ====== HERO ====== -->
+<section class="hero">
+  <div class="hero-inner">
+    <h1 data-i18n="heroTitle">Export Substack to Markdown</h1>
+    <p class="hero-sub" data-i18n="heroSub">Scrape free or premium Substack posts into clean Markdown &amp; HTML. One click, no hassle.</p>
+  </div>
+</section>
+
+<!-- ====== MAIN CONTENT ====== -->
+<main class="main">
+
+  <!-- ----- Form Card ----- -->
+  <div class="card form-card" id="formCard">
+    <div class="card-header">
+      <h2 data-i18n="newExport">New Export</h2>
+    </div>
+    <div class="card-body">
+      <!-- URL input -->
+      <div class="form-group">
+        <label for="scrapeUrl" data-i18n="urlLabel">Substack URL</label>
+        <input type="url" id="scrapeUrl" class="input"
+               placeholder="https://example.substack.com"
+               autocomplete="url" spellcheck="false">
+      </div>
+
+      <!-- Row: number + frontmatter -->
+      <div class="form-row">
+        <div class="form-group flex-1">
+          <label for="scrapeNumber" data-i18n="numLabel">Number of posts</label>
+          <input type="number" id="scrapeNumber" class="input" value="0" min="0" max="9999">
+          <span class="hint" data-i18n="numHint">0 = all</span>
+        </div>
+        <div class="form-group flex-1">
+          <label for="scrapeFrontmatter" data-i18n="fmtLabel">Frontmatter</label>
+          <select id="scrapeFrontmatter" class="input">
+            <option value="legacy" data-i18n="fmtLegacy">Legacy</option>
+            <option value="mdx" data-i18n="fmtMdx">MDX (YAML)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Toggles -->
+      <div class="form-toggles">
+        <label class="toggle" id="premiumToggle">
+          <input type="checkbox" id="scrapePremium">
+          <span class="toggle-track">
+            <span class="toggle-knob"></span>
+          </span>
+          <span class="toggle-label" data-i18n="premium">Premium content</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="scrapeImages">
+          <span class="toggle-track">
+            <span class="toggle-knob"></span>
+          </span>
+          <span class="toggle-label" data-i18n="images">Download images</span>
+        </label>
+      </div>
+
+      <!-- Premium sub-options (hidden by default) -->
+      <div class="premium-options" id="premiumOptions" hidden>
+        <div class="premium-options-inner">
+          <p class="premium-note" data-i18n="premiumNote">First-time? Click "Login" to open a browser and sign in. Subsequent runs reuse the saved session.</p>
+          <div class="form-row" style="margin-bottom:12px">
+            <div class="form-group flex-1" style="margin-bottom:0">
+              <label for="scrapeBrowser" data-i18n="browserLabel">Browser</label>
+              <select id="scrapeBrowser" class="input">
+                <option value="chrome">Chrome</option>
+                <option value="edge">Edge</option>
+              </select>
+            </div>
+            <div class="form-group flex-1" style="margin-bottom:0; display:flex; align-items:flex-end">
+              <button class="btn btn-outline btn-sm" id="loginBtn" style="width:100%;height:40px" data-i18n="loginBtn">Login / Setup Profile</button>
+            </div>
+          </div>
+          <div class="status-area login-status" id="loginStatusArea" hidden>
+            <pre class="progress-log" id="loginProgressLog"></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action -->
+      <button class="btn btn-primary btn-lg" id="startBtn" data-i18n="startBtn">Start Scraping</button>
+
+      <!-- Status area -->
+      <div class="status-area" id="statusArea" hidden>
+        <div class="status-bar">
+          <span class="status-indicator" id="statusIndicator"></span>
+          <span id="statusText"></span>
+        </div>
+        <pre class="progress-log" id="progressLog"></pre>
+        <div class="result-area" id="resultArea" hidden></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ----- Exports Card ----- -->
+  <div class="card exports-card" id="exportsCard">
+    <div class="card-header">
+      <h2 data-i18n="pastExports">Past Exports</h2>
+      <span class="badge" id="exportCount">0</span>
+    </div>
+    <div class="card-body">
+      <div id="exportsList">
+        <div class="empty-state" data-i18n="noExports">No exports yet. Start one above!</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ====== TOAST ====== -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+  // Pass server-side data to JS
+  window.INITIAL_EXPORTS = {{ exports | tojson | safe }};
+</script>
+<script src="/static/js/web-ui.js"></script>
+</body>
+</html>

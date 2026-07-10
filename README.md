@@ -16,7 +16,13 @@ substack-exporter 是一个 Python 工具，用于下载 Substack 上的免费�
 
 ```
 substack-exporter/
-├── substack_scraper.py      # 主入口脚本
+├── substack_scraper.py      # 主入口脚本（CLI）
+├── web_server.py             # Web 界面后端（Flask）
+├── templates/
+│   └── index.html            # Web 界面页面
+├── static/
+│   ├── css/web-ui.css        # Web 界面样式
+│   └── js/web-ui.js          # Web 界面逻辑 + 中英文 i18n
 ├── config.py                 # 付费用户登录凭据（需自行填写）
 ├── author_template.html      # 作者主页 HTML 模板
 ├── requirements.txt          # Python 依赖
@@ -61,7 +67,26 @@ PASSWORD = "your-password"
 
 > 注意：`config.py` 已在 `.gitignore` 中，不会被提交到 Git。
 
-## 使用方式
+## Web 界面（推荐）
+
+项目提供了一个现代化 Web 操作界面，支持中英文切换，无需记忆命令行参数。
+
+```bash
+# 启动 Web 服务
+python web_server.py
+```
+
+浏览器打开 `http://127.0.0.1:5000`，即可在页面上：
+- 输入 Substack URL 并配置抓取选项
+- 一键开始抓取，实时查看进度日志
+- 浏览历史导出，点击预览文章主页
+- 点击右上角 **中/EN** 切换语言
+
+> Web 界面后台通过子进程调用 `substack_scraper.py`，所有输出目录和 CLI 版本完全一致。
+
+---
+
+## 命令行使用
 
 ### 1. 抓取免费文章（全部）
 
