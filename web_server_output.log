@@ -433,3 +433,55 @@ Open http://127.0.0.1:5000 in your browser
  * Restarting with stat
  * Debugger is active!
  * Debugger PIN: 104-651-643
+127.0.0.1 - - [10/Jul/2026 17:30:55] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:30:55] "GET /static/css/web-ui.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:30:55] "GET /static/js/web-ui.js HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:31:08] "GET /preview/stevemagness.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:31:08] "GET /assets/css/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:31:08] "GET /assets/js/populate-essays.js HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:31:10] "GET /substack_html_pages/stevemagness/taking-on-mexico-altitudes-impact.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:31:10] "GET /assets/css/essay-styles.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:31:24] "GET /substack_html_pages/stevemagness/we-turned-doing-hard-things-into.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:31:24] "GET /assets/css/essay-styles.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:31:28] "GET /substack_html_pages/stevemagness/how-to-fail-better.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:31:28] "GET /assets/css/essay-styles.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:35:08] "GET /preview/thmueller.html HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:35:08] "GET /assets/css/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:35:09] "GET /assets/js/populate-essays.js HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:35:10] "GET /substack_html_pages/thmueller/demystifying-tokenization-of-assets.html HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:35:10] "GET /assets/css/essay-styles.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:35:10] "GET /substack_html_pages/thmueller/..../substack_images/thmueller/demystifying-tokenization-of-assets/2588b7d7-545b-40e2-a52c-0bd5faa12b02_1280x720.png HTTP/1.1" 404 -
+127.0.0.1 - - [10/Jul/2026 17:35:10] "GET /substack_html_pages/thmueller/..../substack_images/thmueller/demystifying-tokenization-of-assets/ddabbc1c-01f0-467a-89d3-ef2b34780617_800x1200.jpeg HTTP/1.1" 404 -
+127.0.0.1 - - [10/Jul/2026 17:35:10] "GET /substack_html_pages/thmueller/..../substack_images/thmueller/demystifying-tokenization-of-assets/bb17e179-baad-4ccf-a38b-9bec938e3e03_800x1200.jpeg HTTP/1.1" 404 -
+127.0.0.1 - - [10/Jul/2026 17:35:10] "GET /substack_html_pages/thmueller/..../substack_images/thmueller/demystifying-tokenization-of-assets/f9cb2598-aebc-433a-a853-05c1bd7bc38f_1200x800.png HTTP/1.1" 404 -
+ * Detected change in 'd:\\4Project\\substack-exporter\\web_server.py', reloading
+Substack Exporter Web UI
+Open http://127.0.0.1:5000 in your browser
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 104-651-643
+127.0.0.1 - - [10/Jul/2026 17:36:42] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:36:42] "GET /static/css/web-ui.css HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:36:42] "GET /static/js/web-ui.js HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:36:44] "GET /favicon.ico HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:08] "POST /api/scrape HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:10] "GET /api/jobs/3466d4d8 HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:12] "GET /api/jobs/3466d4d8 HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:13] "GET /api/jobs/3466d4d8 HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:13] "GET /api/exports HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:54] "POST /api/scrape HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:55] "GET /api/jobs/e70e9b9f HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:40:56] "GET /api/exports HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:41:02] "GET /preview/joyannreid.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:41:02] "GET /assets/css/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:41:02] "GET /assets/js/populate-essays.js HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:41:04] "GET /substack_html_pages/joyannreid/understanding-cognitive-functioning.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:41:04] "GET /assets/css/essay-styles.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:42:28] "POST /api/scrape HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:42:29] "GET /api/jobs/6df430b7 HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:42:29] "GET /api/exports HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:42:37] "GET /preview/paulkrugman.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:42:37] "GET /assets/css/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:42:37] "GET /assets/js/populate-essays.js HTTP/1.1" 304 -
+127.0.0.1 - - [10/Jul/2026 17:42:39] "GET /substack_html_pages/paulkrugman/the-pain-in-spain-is-mainly-in-trumps.html HTTP/1.1" 200 -
+127.0.0.1 - - [10/Jul/2026 17:42:39] "GET /assets/css/essay-styles.css HTTP/1.1" 304 -

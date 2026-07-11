@@ -199,8 +199,8 @@ def detect_videos_from_soup(soup: BeautifulSoup) -> list:
     videos = []
     for v in soup.find_all('video'):
         poster = v.get('poster', '')
-        # poster pattern: .../video_upload/user/{user_id}/{video_id}/transcoded-00001.png
-        match = re.search(r'/video_upload/user/\d+/([a-f0-9-]+)/', poster)
+        # poster pattern: .../video_upload/user/{id}/{video_id}/...  OR  .../video_upload/post/{id}/{video_id}/...
+        match = re.search(r'/video_upload/(?:user|post)/\d+/([a-f0-9-]+)/', poster)
         if match:
             video_id = match.group(1)
             if video_id not in [vid for vid, _ in videos]:
