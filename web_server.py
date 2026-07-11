@@ -8,12 +8,13 @@ import os
 import sys
 import json
 import uuid
+import shutil
 import threading
 import subprocess
 from datetime import datetime, timezone
 from time import sleep, time
 
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, abort, Response
 
 # Selenium imports for login functionality
 from selenium.webdriver.common.by import By
@@ -38,6 +39,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MD_DIR = os.path.join(BASE_DIR, 'substack_md_files')
 HTML_DIR = os.path.join(BASE_DIR, 'substack_html_pages')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
+IMAGE_DIR = os.path.join(BASE_DIR, 'substack_images')
+VIDEO_DIR = os.path.join(BASE_DIR, 'substack_videos')
 SCRAPER_SCRIPT = os.path.join(BASE_DIR, 'substack_scraper.py')
 
 # --- Job Management ---
@@ -172,8 +175,12 @@ def list_all_exports():
             try:
                 with open(fpath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                author = fname.replace('.json', '')
                 posts = data if isinstance(data, list) else []
+                if not posts:
+                    # Empty JSON — remove it and skip display
+                    os.remove(fpath)
+                    continue
+                author = fname.replace('.json', '')
                 exports.append({
                     'author': author,
                     'count': len(posts),
@@ -188,11 +195,42 @@ def list_all_exports():
                         if os.path.exists(os.path.join(MD_DIR, author))
                         else None
                     ),
+                    'has_images': os.path.isdir(os.path.join(IMAGE_DIR, author)),
+                    'has_videos': os.path.isdir(os.path.join(VIDEO_DIR, author)),
                     'posts': posts[:5],  # first 5 for preview
                 })
             except Exception:
                 pass
+
+    # Clean up empty / orphan directories
+    _cleanup_orphan_dirs(MD_DIR, exports)
+    _cleanup_orphan_dirs(HTML_DIR, exports)
+
     return sorted(exports, key=lambda x: x['author'])
+
+
+def _cleanup_orphan_dirs(base_dir, exports):
+    """Remove author directories that are empty or have no valid export data."""
+    if not os.path.exists(base_dir):
+        return
+    valid_authors = {e['author'] for e in exports}
+    for entry in os.listdir(base_dir):
+        entry_path = os.path.join(base_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        if entry not in valid_authors:
+            # Orphan directory — no corresponding JSON data, remove entirely
+            try:
+                shutil.rmtree(entry_path)
+            except OSError:
+                pass
+            continue
+        # Valid author — remove if empty
+        try:
+            if not os.listdir(entry_path):
+                os.rmdir(entry_path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +520,148 @@ def serve_generated_md(filename):
 def serve_raw(author, filename):
     """Serve raw markdown files."""
     return send_from_directory(os.path.join(MD_DIR, author), filename)
+
+
+@app.route('/substack_images/<path:filename>')
+def serve_images(filename):
+    """Serve downloaded images."""
+    return send_from_directory(IMAGE_DIR, filename)
+
+
+def _stream_file_range(filepath, start, length, chunk_size=64 * 1024):
+    """Generator that yields byte chunks from a file range (streaming)."""
+    with open(filepath, 'rb') as f:
+        f.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = f.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            yield chunk
+            remaining -= len(chunk)
+
+
+def _is_ts_file(filepath):
+    """Check if a .mp4 file is actually a raw TS (Transport Stream) file."""
+    try:
+        with open(filepath, 'rb') as f:
+            return f.read(1) == b'\x47'
+    except OSError:
+        return False
+
+
+def _remux_ts_to_mp4(ts_path):
+    """Remux a TS file to a proper MP4 (lossless, fast). Caches next to the original.
+    Returns the path to the MP4 on success, or None if ffmpeg is unavailable/fails."""
+    mp4_path = ts_path + '.remuxed.mp4'
+    if os.path.isfile(mp4_path) and os.path.getsize(mp4_path) > 0:
+        return mp4_path
+
+    try:
+        subprocess.run(
+            ['ffmpeg', '-version'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-y', '-i', ts_path, '-c', 'copy', '-movflags', '+faststart', mp4_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        if result.returncode == 0 and os.path.isfile(mp4_path) and os.path.getsize(mp4_path) > 0:
+            return mp4_path
+    except Exception:
+        pass
+    return None
+
+
+@app.route('/substack_videos/<path:filename>')
+def serve_videos(filename):
+    """Serve videos with explicit Range support for seeking/scrubbing."""
+    filepath = os.path.join(VIDEO_DIR, filename)
+    if not os.path.isfile(filepath):
+        abort(404)
+
+    # Detect TS files disguised as .mp4 → remux to proper MP4 on the fly
+    if filepath.endswith('.mp4') and _is_ts_file(filepath):
+        mp4 = _remux_ts_to_mp4(filepath)
+        if mp4:
+            filepath = mp4
+
+    ext = os.path.splitext(filename)[1].lower()
+    mime_map = {'.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska'}
+    mimetype = mime_map.get(ext, 'video/mp4')
+    file_size = os.path.getsize(filepath)
+
+    range_header = request.headers.get('Range', None)
+
+    if not range_header:
+        # No Range header — return full file (initial playback)
+        return send_file(filepath, mimetype=mimetype)
+
+    # Parse Range: "bytes=start-end"
+    try:
+        raw = range_header.replace('bytes=', '').strip()
+        start_str, end_str = raw.split('-')
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else file_size - 1
+    except (ValueError, AttributeError):
+        return send_file(filepath, mimetype=mimetype)
+
+    # Validate range
+    if start >= file_size or end >= file_size or start > end:
+        resp = Response('', status=416)
+        resp.headers['Content-Range'] = f'bytes */{file_size}'
+        return resp
+
+    end = min(end, file_size - 1)
+    length = end - start + 1
+
+    resp = Response(
+        _stream_file_range(filepath, start, length),
+        status=206,
+        mimetype=mimetype,
+        direct_passthrough=True,
+    )
+    resp.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+    resp.headers['Accept-Ranges'] = 'bytes'
+    resp.headers['Content-Length'] = str(length)
+    resp.headers['Cache-Control'] = 'no-cache'
+
+    return resp
+
+
+@app.route('/api/media/<author>')
+def api_media(author):
+    """List images and videos for an author."""
+    result = {'images': {}, 'videos': {}}
+
+    # Scan images: substack_images/<author>/<slug>/*.png|*.jpg|*.jpeg|*.gif|*.webp
+    img_author_dir = os.path.join(IMAGE_DIR, author)
+    if os.path.isdir(img_author_dir):
+        for slug in sorted(os.listdir(img_author_dir)):
+            slug_dir = os.path.join(img_author_dir, slug)
+            if os.path.isdir(slug_dir):
+                files = sorted(f for f in os.listdir(slug_dir)
+                               if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')))
+                if files:
+                    result['images'][slug] = files
+
+    # Scan videos: substack_videos/<author>/<slug>/*.mp4|*.webm|*.mkv
+    vid_author_dir = os.path.join(VIDEO_DIR, author)
+    if os.path.isdir(vid_author_dir):
+        for slug in sorted(os.listdir(vid_author_dir)):
+            slug_dir = os.path.join(vid_author_dir, slug)
+            if os.path.isdir(slug_dir):
+                files = sorted(f for f in os.listdir(slug_dir)
+                               if f.lower().endswith(('.mp4', '.webm', '.mkv')))
+                if files:
+                    result['videos'][slug] = files
+
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------

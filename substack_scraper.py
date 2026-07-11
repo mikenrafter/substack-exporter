@@ -191,6 +191,43 @@ def process_markdown_images(md_content: str, author: str, post_slug: str, pbar=N
 # VIDEO DOWNLOADING
 # =============================================================================
 
+def _remux_ts_to_mp4(ts_path: str, mp4_path: str, pbar=None) -> bool:
+    """Remux a TS (Transport Stream) file to MP4 using ffmpeg.
+    
+    This only changes the container — no re-encoding (lossless, fast).
+    Returns True on success, False if ffmpeg is unavailable/fails.
+    """
+    try:
+        subprocess.run(
+            ['ffmpeg', '-version'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', ts_path,
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        mp4_path,
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0 and os.path.isfile(mp4_path) and os.path.getsize(mp4_path) > 0:
+            return True
+        else:
+            err = result.stderr.strip().split('\n')[-1] if result.stderr else 'unknown'
+            if pbar:
+                pbar.write(f'[VIDEO] ffmpeg remux failed: {err}')
+            return False
+    except Exception as e:
+        if pbar:
+            pbar.write(f'[VIDEO] ffmpeg error: {e}')
+        return False
+
+
 def detect_videos_from_soup(soup: BeautifulSoup) -> list:
     """
     Detect <video> tags in a page and extract video IDs from poster URLs.
@@ -302,15 +339,32 @@ def download_hls_video(stream_url: str, output_path: str, pbar=None) -> bool:
             if pbar:
                 pbar.update(1)
 
-        # Step 5: concatenate TS segments (TS files can be concatenated directly)
-        with open(output_path, 'wb') as outfile:
+        # Step 5: concatenate TS segments into a temp .ts file
+        ts_path = output_path + '.ts_tmp'
+        with open(ts_path, 'wb') as outfile:
             for seg_path in segment_files:
                 with open(seg_path, 'rb') as infile:
                     outfile.write(infile.read())
 
-        # Cleanup temp directory
+        # Step 6: remux TS → MP4 using ffmpeg (browsers can't play raw TS)
+        remuxed = _remux_ts_to_mp4(ts_path, output_path, pbar)
+
+        # Cleanup: remove temp TS file and segment directory
         import shutil
         shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            os.remove(ts_path)
+        except OSError:
+            pass
+
+        if not remuxed:
+            # ffmpeg unavailable — save the concatenated TS with .mp4 extension
+            # as a fallback (won't play in browser but preserves data)
+            if pbar:
+                pbar.write('[VIDEO] ffmpeg not available, saved as raw TS (won\'t play in browser).')
+            else:
+                print('[VIDEO] ffmpeg not available, saved as raw TS (won\'t play in browser).')
+            os.rename(ts_path, output_path)
         
         return True
 
@@ -1188,18 +1242,24 @@ class BaseSubstackScraper(ABC):
         content_lines = note_lines[1:] if len(note_lines) > 1 else []
         content_text = "\n".join(content_lines).strip()
 
-        # Also try to extract content from the rendered ProseMirror div (may have links, etc.)
-        prose_div = soup.select_one("div.ProseMirror.FeedProseMirror")
-        if prose_div:
-            content_html = str(prose_div)
-            md_content = self.html_to_md(content_html)
-            # Strip the first paragraph from md_content since it's the title
-            lines = md_content.split("\n", 2)
-            if len(lines) >= 2:
-                md_content = lines[2] if len(lines) > 2 else ""
-        else:
-            # Fallback: use ld+json plain text as markdown content
-            # Skip the first line (title) from content
+        # Try to extract content from the rendered ProseMirror div (may have links, etc.)
+        # Note: Note pages show a feed with multiple ProseMirror divs; match by title.
+        md_content = ""
+        prose_divs = soup.select("div.ProseMirror.FeedProseMirror")
+        title_lower = title.lower()
+        for prose_div in prose_divs:
+            div_text = prose_div.get_text(strip=True).lower()
+            if title_lower in div_text[:120]:
+                content_html = str(prose_div)
+                md_content = self.html_to_md(content_html)
+                # Strip the first paragraph from md_content since it's the title
+                lines = md_content.split("\n", 2)
+                if len(lines) >= 2:
+                    md_content = lines[2] if len(lines) > 2 else ""
+                break
+
+        # Fallback: use ld+json plain text as markdown content
+        if not md_content:
             if content_text:
                 md_content = content_text.replace("\n", "\n\n")
             else:
@@ -1323,6 +1383,13 @@ class BaseSubstackScraper(ABC):
             with open(json_path, 'r', encoding='utf-8') as file:
                 existing_data = json.load(file)
             essays_data = existing_data + [data for data in essays_data if data not in existing_data]
+
+        # If no data to persist, delete the JSON file (don't leave an empty file)
+        if not essays_data:
+            if os.path.exists(json_path):
+                os.remove(json_path)
+            return
+
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(essays_data, f, ensure_ascii=False, indent=4)
 

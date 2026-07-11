@@ -37,6 +37,10 @@ const I18N = {
     viewMd: '查看 Markdown',
     openFolder: '打开目录',
     preview: '预览',
+    viewImages: '查看图片',
+    viewVideos: '查看视频',
+    mediaTitle: '媒体文件',
+    mediaEmpty: '暂无媒体文件',
     errorMsg: '出错了，请检查 URL 或稍后重试。',
     jobRunning: '已有任务正在执行，请等待完成。',
   },
@@ -71,6 +75,10 @@ const I18N = {
     viewMd: 'View Markdown',
     openFolder: 'Open Folder',
     preview: 'Preview',
+    viewImages: 'Images',
+    viewVideos: 'Videos',
+    mediaTitle: 'Media Files',
+    mediaEmpty: 'No media files found.',
     errorMsg: 'Something went wrong. Check the URL or try again later.',
     jobRunning: 'A job is already running. Please wait for it to finish.',
   },
@@ -126,6 +134,10 @@ const toastCont     = $('#toastContainer');
 const loginBtn      = $('#loginBtn');
 const loginStatus   = $('#loginStatusArea');
 const loginLog      = $('#loginProgressLog');
+const mediaModal    = $('#mediaModal');
+const mediaTitle    = $('#mediaModalTitle');
+const mediaBody     = $('#mediaModalBody');
+const mediaClose    = $('#mediaModalClose');
 
 let pollTimer = null;
 let currentJobId = null;
@@ -156,6 +168,12 @@ function init() {
 
   // Start button
   startBtn.addEventListener('click', startScrape);
+
+  // Media modal close
+  mediaClose.addEventListener('click', closeMediaModal);
+  mediaModal.addEventListener('click', (e) => {
+    if (e.target === mediaModal) closeMediaModal();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -422,11 +440,136 @@ function renderExports(exports) {
       actions.appendChild(viewBtn);
     }
 
+    if (exp.has_images) {
+      const imgBtn = document.createElement('button');
+      imgBtn.className = 'btn btn-outline btn-sm';
+      imgBtn.textContent = t('viewImages');
+      imgBtn.addEventListener('click', () => openMediaModal(exp.author, 'images'));
+      actions.appendChild(imgBtn);
+    }
+
+    if (exp.has_videos) {
+      const vidBtn = document.createElement('button');
+      vidBtn.className = 'btn btn-outline btn-sm';
+      vidBtn.textContent = t('viewVideos');
+      vidBtn.addEventListener('click', () => openMediaModal(exp.author, 'videos'));
+      actions.appendChild(vidBtn);
+    }
+
     item.appendChild(info);
     item.appendChild(actions);
     exportsList.appendChild(item);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Media modal
+// ---------------------------------------------------------------------------
+async function openMediaModal(author, tab) {
+  mediaTitle.textContent = `${t('mediaTitle')} — ${author}`;
+  mediaBody.innerHTML = '<div class="modal-loading">Loading…</div>';
+  mediaModal.hidden = false;
+
+  try {
+    const resp = await fetch(`/api/media/${encodeURIComponent(author)}`);
+    if (!resp.ok) throw new Error('Failed to load');
+    const data = await resp.json();
+    renderMediaContent(data, author, tab);
+  } catch (err) {
+    mediaBody.innerHTML = `<div class="modal-loading">${t('errorMsg')}</div>`;
+    console.error('Media load error:', err);
+  }
+}
+
+function renderMediaContent(data, author, defaultTab) {
+  const hasImages = Object.keys(data.images || {}).length > 0;
+  const hasVideos = Object.keys(data.videos || {}).length > 0;
+
+  if (!hasImages && !hasVideos) {
+    mediaBody.innerHTML = `<div class="modal-loading">${t('mediaEmpty')}</div>`;
+    return;
+  }
+
+  let html = '';
+
+  // Tabs
+  html += '<div class="media-tabs">';
+  if (hasImages) {
+    html += `<button class="media-tab ${defaultTab === 'images' ? 'active' : ''}" data-media-tab="images">${t('viewImages')}</button>`;
+  }
+  if (hasVideos) {
+    html += `<button class="media-tab ${defaultTab === 'videos' ? 'active' : ''}" data-media-tab="videos">${t('viewVideos')}</button>`;
+  }
+  html += '</div>';
+
+  // Content panels
+  html += '<div class="media-content">';
+
+  if (hasImages) {
+    html += `<div class="media-panel ${defaultTab === 'images' ? '' : 'hidden'}" data-media-panel="images">`;
+    for (const [slug, files] of Object.entries(data.images)) {
+      html += '<div class="media-group">';
+      html += `<div class="media-group-title">${escHtml(slug)}</div>`;
+      html += '<div class="media-grid">';
+      for (const file of files) {
+        const src = `/substack_images/${encodeURIComponent(author)}/${encodeURIComponent(slug)}/${encodeURIComponent(file)}`;
+        html += `<div class="media-card">
+          <a href="${src}" target="_blank">
+            <img src="${src}" alt="${escHtml(file)}" loading="lazy">
+          </a>
+          <div class="media-card-name">${escHtml(file)}</div>
+        </div>`;
+      }
+      html += '</div></div>';
+    }
+    html += '</div>';
+  }
+
+  if (hasVideos) {
+    html += `<div class="media-panel ${defaultTab === 'videos' ? '' : 'hidden'}" data-media-panel="videos">`;
+    for (const [slug, files] of Object.entries(data.videos)) {
+      html += '<div class="media-group">';
+      html += `<div class="media-group-title">${escHtml(slug)}</div>`;
+      for (const file of files) {
+        const src = `/substack_videos/${encodeURIComponent(author)}/${encodeURIComponent(slug)}/${encodeURIComponent(file)}`;
+        html += `<div class="media-video-card">
+          <video controls preload="metadata" src="${src}" class="media-video"></video>
+          <div class="media-card-name">${escHtml(file)}</div>
+        </div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  html += '</div>';
+
+  mediaBody.innerHTML = html;
+
+  // Tab switching
+  mediaBody.querySelectorAll('.media-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.mediaTab;
+      mediaBody.querySelectorAll('.media-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      mediaBody.querySelectorAll('.media-panel').forEach(p => {
+        p.classList.toggle('hidden', p.dataset.mediaPanel !== tab);
+      });
+    });
+  });
+}
+
+function closeMediaModal() {
+  mediaModal.hidden = true;
+  mediaBody.innerHTML = '';
+}
+
+function escHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 
 async function refreshExports() {
   try {
