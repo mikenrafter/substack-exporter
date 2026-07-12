@@ -1,16 +1,18 @@
 ﻿# substack-exporter
 
+[English](./README_EN.md) | 中文
+
 Substack 和微信公众号本质上很像，都是个人做自媒体的工具，只是 Substack 的用户和创作者以海外为主。substack-exporter 是一个 Python 工具，用于下载 Substack 上的免费和付费文章，并将其保存为 Markdown 和 HTML 文件。它还包含一个简洁的 Web 界面，方便用户浏览和排序文章。只要您订阅了该 Substack，它就会保存付费内容。
 
 ## 截图展示
 
-| Web 操作界面 | 文章列表页 | 文章详情页 |
-|:---:|:---:|:---:|
-| ![Web 界面](Screenshot/index.png) | ![文章列表](Screenshot/article-list.png) | ![文章详情](Screenshot/article-detail.png) |
+|            Web 操作界面             | 文章列表页 | 文章详情页 |
+|:-------------------------------:|:---:|:---:|
+| ![Web 界面](screenshot/index.png) | ![文章列表](screenshot/article-list.png) | ![文章详情](screenshot/article-detail.png) |
 
 | 图片浏览 | 视频浏览 |
 |:---:|:---:|
-| ![图片列表](Screenshot/photo-list.png) | ![视频列表](Screenshot/video-list.png) |
+| ![图片列表](screenshot/photo-list.png) | ![视频列表](screenshot/video-list.png) |
 
 ## 核心功能
 

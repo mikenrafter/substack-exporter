@@ -1,16 +1,18 @@
 # substack-exporter
 
+English | [中文](./README.md)
+
 Substack and WeChat Official Accounts are essentially the same — both are self-media tools for individual creators, though Substack primarily serves an international audience. substack-exporter is a Python tool for downloading free and premium articles from Substack and saving them as Markdown and HTML files. It also includes a clean web UI for browsing and sorting articles. As long as you are subscribed to the Substack, it will save premium content.
 
 ## Screenshots
 
 | Web Dashboard | Article List | Article Detail |
 |:---:|:---:|:---:|
-| ![Web UI](Screenshot/index.png) | ![Article List](Screenshot/article-list.png) | ![Article Detail](Screenshot/article-detail.png) |
+| ![Web UI](screenshot/index.png) | ![Article List](screenshot/article-list.png) | ![Article Detail](screenshot/article-detail.png) |
 
 | Image Browser | Video Browser |
 |:---:|:---:|
-| ![Image List](Screenshot/photo-list.png) | ![Video List](Screenshot/video-list.png) |
+| ![Image List](screenshot/photo-list.png) | ![Video List](screenshot/video-list.png) |
 
 ## Core Features
 
