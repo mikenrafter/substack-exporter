@@ -9,12 +9,13 @@ import sys
 import json
 import uuid
 import shutil
+import secrets
 import threading
 import subprocess
 from datetime import datetime, timezone
 from time import sleep, time
 
-from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, abort, Response
+from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, abort, Response, session
 
 # Selenium imports for login functionality
 from selenium.webdriver.common.by import By
@@ -33,6 +34,43 @@ except ImportError:
     EMAIL, PASSWORD = '', ''
 
 app = Flask(__name__)
+app.secret_key = secrets.token_hex(32)
+app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
+
+# --- Auth ---
+# Local-only token gate: closes the "any co-resident process or open browser
+# tab can blind-fetch every route" hole that loopback binding alone doesn't
+# cover. Set SUBSTACK_EXPORTER_TOKEN to pin it; otherwise a fresh token is
+# generated per run and printed to the console.
+AUTH_TOKEN = os.environ.get('SUBSTACK_EXPORTER_TOKEN') or secrets.token_urlsafe(24)
+
+
+@app.before_request
+def _require_token():
+    if session.get('authed'):
+        return None
+    if secrets.compare_digest(request.args.get('token', ''), AUTH_TOKEN):
+        session['authed'] = True
+        return None
+    abort(401, description='Missing or invalid token. Open the URL printed at startup.')
+
+
+def _is_safe_path_component(name):
+    """Reject empty/'.'/'..' segments and path separators in a single path component."""
+    if name in ('', '.', '..'):
+        return False
+    if os.sep in name or (os.altsep and os.altsep in name):
+        return False
+    return True
+
+
+def _safe_join(base_dir, *parts):
+    """Join parts onto base_dir and resolve; return None if the result escapes base_dir."""
+    base_dir = os.path.realpath(base_dir)
+    target = os.path.realpath(os.path.join(base_dir, *parts))
+    if os.path.commonpath([base_dir, target]) != base_dir:
+        return None
+    return target
 
 # --- Paths ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -519,6 +557,8 @@ def serve_generated_md(filename):
 @app.route('/raw/<author>/<path:filename>')
 def serve_raw(author, filename):
     """Serve raw markdown files."""
+    if not _is_safe_path_component(author):
+        abort(404)
     return send_from_directory(os.path.join(MD_DIR, author), filename)
 
 
@@ -581,8 +621,8 @@ def _remux_ts_to_mp4(ts_path):
 @app.route('/substack_videos/<path:filename>')
 def serve_videos(filename):
     """Serve videos with explicit Range support for seeking/scrubbing."""
-    filepath = os.path.join(VIDEO_DIR, filename)
-    if not os.path.isfile(filepath):
+    filepath = _safe_join(VIDEO_DIR, filename)
+    if filepath is None or not os.path.isfile(filepath):
         abort(404)
 
     # Detect TS files disguised as .mp4 → remux to proper MP4 on the fly
@@ -637,6 +677,8 @@ def serve_videos(filename):
 @app.route('/api/media/<author>')
 def api_media(author):
     """List images and videos for an author."""
+    if not _is_safe_path_component(author):
+        abort(404)
     result = {'images': {}, 'videos': {}}
 
     # Scan images: substack_images/<author>/<slug>/*.png|*.jpg|*.jpeg|*.gif|*.webp
@@ -669,5 +711,6 @@ def api_media(author):
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
     print('Substack Exporter Web UI')
-    print('Open http://127.0.0.1:5000 in your browser')
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    print(f'Open http://127.0.0.1:5000/?token={AUTH_TOKEN} in your browser')
+    debug = os.environ.get('SUBSTACK_EXPORTER_DEBUG') == '1'
+    app.run(debug=debug, host='127.0.0.1', port=5000)

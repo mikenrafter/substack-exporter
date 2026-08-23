@@ -16,15 +16,35 @@ function sortEssaysByLikes(data) {
         : b.like_count - a.like_count);
 }
 function populateEssays(data) {
+    // Built via DOM APIs (not innerHTML/template strings) because essay.title
+    // and essay.subtitle come from scraped, untrusted third-party post content.
     const essaysContainer = document.getElementById('essays-container');
-    const list = data.map(essay => `
-        <li>
-            <a href="../${showHTML ? essay.html_link : essay.file_link}" target="_blank">${essay.title}</a>
-            <div class="subtitle">${essay.subtitle}</div>
-            <div class="metadata">${essay.like_count} Likes - ${essay.date}</div>
-        </li>
-    `).join('');
-    essaysContainer.innerHTML = `<ul>${list}</ul>`;
+    const listEl = document.createElement('ul');
+
+    for (const essay of data) {
+        const li = document.createElement('li');
+
+        const link = document.createElement('a');
+        link.href = '../' + (showHTML ? essay.html_link : essay.file_link);
+        link.target = '_blank';
+        link.textContent = essay.title;
+        li.appendChild(link);
+
+        const subtitle = document.createElement('div');
+        subtitle.className = 'subtitle';
+        subtitle.textContent = essay.subtitle;
+        li.appendChild(subtitle);
+
+        const metadata = document.createElement('div');
+        metadata.className = 'metadata';
+        metadata.textContent = `${essay.like_count} Likes - ${essay.date}`;
+        li.appendChild(metadata);
+
+        listEl.appendChild(li);
+    }
+
+    essaysContainer.innerHTML = '';
+    essaysContainer.appendChild(listEl);
 }
 
 
