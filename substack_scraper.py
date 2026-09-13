@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from typing import List, Optional, Tuple
-from time import sleep, time
+from time import monotonic, sleep, time
 
 import html2text
 import markdown
@@ -559,7 +559,7 @@ class BrowserManager:
     def download_driver_with_requests(cls, browser: str, browser_version: str) -> Optional[str]:
         """
         Download the correct driver directly using requests.
-        This bypasses webdriver_manager issues and gives us full control.
+        This helper is retained only for compatibility with older installations.
         Returns the path to the downloaded driver, or None if failed.
         """
         import zipfile
@@ -739,9 +739,7 @@ class BrowserManager:
         Strategy:
         1. Use explicit driver path if provided
         2. Check our local cache for a compatible driver
-        3. Download driver directly to our cache (bypasses PATH issues)
-        4. Fall back to webdriver_manager
-        5. Fall back to Selenium Manager
+        3. Fail with an actionable error when no configured driver works
         """
         browser = browser.lower()
         if browser not in cls.SUPPORTED_BROWSERS:
@@ -827,39 +825,6 @@ class BrowserManager:
             except Exception as e:
                 errors.append(f"Direct download failed: {e}")
                 print(f"[FAIL] Direct download failed: {e}")
-        
-        # Strategy 3: webdriver_manager with explicit path
-        print("\nTrying webdriver_manager...")
-        try:
-            if browser == 'chrome':
-                from webdriver_manager.chrome import ChromeDriverManager
-                from webdriver_manager.core.os_manager import ChromeType
-                mgr = ChromeDriverManager()
-                driver_path_wdm = mgr.install()
-                print(f"webdriver_manager installed driver to: {driver_path_wdm}")
-                service = ChromeService(executable_path=driver_path_wdm)
-                return webdriver.Chrome(service=service, options=options)
-            else:
-                from webdriver_manager.microsoft import EdgeChromiumDriverManager
-                mgr = EdgeChromiumDriverManager()
-                driver_path_wdm = mgr.install()
-                print(f"webdriver_manager installed driver to: {driver_path_wdm}")
-                service = EdgeService(executable_path=driver_path_wdm)
-                return webdriver.Edge(service=service, options=options)
-        except Exception as e:
-            errors.append(f"webdriver_manager failed: {e}")
-            print(f"[FAIL] webdriver_manager failed: {e}")
-        
-        # Strategy 4: Let Selenium Manager try (last resort)
-        print("\nTrying Selenium Manager (last resort)...")
-        try:
-            if browser == 'chrome':
-                return webdriver.Chrome(options=options)
-            else:
-                return webdriver.Edge(options=options)
-        except Exception as e:
-            errors.append(f"Selenium Manager failed: {e}")
-            print(f"[FAIL] Selenium Manager failed: {e}")
         
         # All strategies failed
         error_msg = cls._build_error_message(browser, browser_version, stale_drivers, errors)
@@ -961,6 +926,9 @@ class BrowserManager:
 # =============================================================================
 
 class BaseSubstackScraper(ABC):
+    min_delay_seconds: float = 6
+    _last_request_at: float | None = None
+
     def __init__(
         self,
         base_substack_url: str,
@@ -1014,6 +982,15 @@ class BaseSubstackScraper(ABC):
             self.keywords: List[str] = ["about", "archive", "podcast"]
             self.post_urls: List[str] = self.get_all_post_urls()
 
+    def _wait_for_request(self) -> None:
+        """Wait until the configured minimum interval since the last request."""
+        now = monotonic()
+        if self._last_request_at is not None:
+            sleep_for = self.min_delay_seconds - (now - self._last_request_at)
+            if sleep_for > 0:
+                sleep(sleep_for)
+        self._last_request_at = monotonic()
+
     def get_all_post_urls(self) -> List[str]:
         """Attempts to fetch URLs from sitemap.xml, falling back to feed.xml if necessary."""
         urls = self.fetch_urls_from_sitemap()
@@ -1024,6 +1001,7 @@ class BaseSubstackScraper(ABC):
     def fetch_urls_from_sitemap(self) -> List[str]:
         """Fetches URLs from sitemap.xml."""
         sitemap_url = f"{self.base_substack_url}sitemap.xml"
+        self._wait_for_request()
         response = requests.get(sitemap_url)
 
         if not response.ok:
@@ -1038,6 +1016,7 @@ class BaseSubstackScraper(ABC):
         """Fetches URLs from feed.xml."""
         print('Falling back to feed.xml. This will only contain up to the 22 most recent posts.')
         feed_url = f"{self.base_substack_url}feed.xml"
+        self._wait_for_request()
         response = requests.get(feed_url)
 
         if not response.ok:
@@ -1508,7 +1487,12 @@ class SubstackScraper(BaseSubstackScraper):
         download_images: bool = False,
         frontmatter_format: str = "legacy",
         download_videos: bool = False,
+        min_delay_seconds: float = 6,
     ):
+        if min_delay_seconds < 0:
+            raise ValueError("min_delay_seconds must be non-negative")
+        self.min_delay_seconds = min_delay_seconds
+        self._last_request_at = None
         super().__init__(
             base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format, download_videos
         )
@@ -1517,6 +1501,7 @@ class SubstackScraper(BaseSubstackScraper):
         """Gets soup from URL using requests, with retry on rate limiting."""
         for attempt in range(1, max_attempts + 1):
             try:
+                self._wait_for_request()
                 page = requests.get(url, headers=None)
                 soup = BeautifulSoup(page.content, "html.parser")
 
@@ -1563,6 +1548,7 @@ class PremiumSubstackScraper(BaseSubstackScraper):
         skip_login: bool = False,
         frontmatter_format: str = "legacy",
         download_videos: bool = False,
+        min_delay_seconds: float = 6,
     ) -> None:
         """
         Initialize the premium scraper with browser automation.
@@ -1600,6 +1586,10 @@ class PremiumSubstackScraper(BaseSubstackScraper):
             self.driver.get(base_substack_url)
             sleep(3)
 
+        if min_delay_seconds < 0:
+            raise ValueError("min_delay_seconds must be non-negative")
+        self.min_delay_seconds = min_delay_seconds
+        self._last_request_at = None
         super().__init__(
             base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format, download_videos
         )
@@ -1795,6 +1785,7 @@ class PremiumSubstackScraper(BaseSubstackScraper):
         """Gets soup from URL using logged-in Selenium driver, with retry on rate limiting."""
         for attempt in range(1, max_attempts + 1):
             try:
+                self._wait_for_request()
                 self.driver.get(url)
 
                 # Wait up to 20s for the post body (or a paywall marker) to appear, instead of a fixed sleep.
@@ -1908,7 +1899,7 @@ Examples:
         help="Use browser automation to access premium/paid content."
     )
     premium_group.add_argument(
-        "--browser", type=str, default="chrome", choices=['chrome', 'edge'],
+        "--browser", type=str, default=os.environ.get("SUBSTACK_EXPORTER_BROWSER", "chrome"), choices=['chrome', 'edge'],
         help="Browser to use for premium scraping (default: chrome)."
     )
     premium_group.add_argument(
@@ -1927,19 +1918,19 @@ Examples:
     # Driver path options
     driver_group = parser.add_argument_group('Driver options (for troubleshooting)')
     driver_group.add_argument(
-        "--chrome-driver-path", type=str, default="",
+        "--chrome-driver-path", type=str, default=os.environ.get("SUBSTACK_EXPORTER_DRIVER_PATH", os.environ.get("CHROMEDRIVER", "")),
         help="Path to chromedriver executable."
     )
     driver_group.add_argument(
-        "--edge-driver-path", type=str, default="",
+        "--edge-driver-path", type=str, default=os.environ.get("SUBSTACK_EXPORTER_DRIVER_PATH", os.environ.get("CHROMEDRIVER", "")),
         help="Path to msedgedriver executable."
     )
     driver_group.add_argument(
-        "--chrome-path", type=str, default="",
+        "--chrome-path", type=str, default=os.environ.get("SUBSTACK_EXPORTER_BROWSER_PATH", os.environ.get("CHROME_BIN", "")),
         help="Path to Chrome browser executable."
     )
     driver_group.add_argument(
-        "--edge-path", type=str, default="",
+        "--edge-path", type=str, default=os.environ.get("SUBSTACK_EXPORTER_BROWSER_PATH", os.environ.get("CHROME_BIN", "")),
         help="Path to Edge browser executable."
     )
     driver_group.add_argument(
@@ -1983,6 +1974,7 @@ def main():
                 skip_login=args.skip_login,
                 frontmatter_format=args.frontmatter,
                 download_videos=args.videos,
+                min_delay_seconds=args.min_delay_seconds,
             )
         else:
             scraper = SubstackScraper(
