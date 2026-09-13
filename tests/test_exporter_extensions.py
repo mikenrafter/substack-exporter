@@ -280,6 +280,44 @@ def test_crawl_config_requires_non_empty_allowed_hosts():
     assert source.crawl.max_depth == 3
 
 
+def test_crawl_saves_each_page_immediately_not_only_at_the_end(tmp_path):
+    """
+    A large multi-level crawl can take a long time to fully drain its
+    queue; saving should happen as each page is scraped, not only once
+    the whole crawl finishes, or nothing shows up in html_save_dir until
+    a possibly very distant "done".
+    """
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {"mode": "static", "urls": ["https://notion.example/root"]},
+            "crawl": {"allowed_hosts": ["notion.example"]},
+        }
+    )
+
+    html_dir = tmp_path / "html"
+    pages = {
+        "https://notion.example/root": '<a href="https://notion.example/child">child</a>',
+        "https://notion.example/child": "<p>leaf</p>",
+    }
+    seen_root_saved_before_child_fetched = {}
+
+    def fake_get(url):
+        if url == "https://notion.example/child":
+            seen_root_saved_before_child_fetched["value"] = (html_dir / "root.html").exists()
+        return Mock(ok=True, content=pages[url].encode(), url=url)
+
+    adapter = adapter_type(source=source, html_save_dir=str(html_dir))
+    with patch("substack_scraper.requests.get", side_effect=fake_get):
+        adapter.scrape_posts()
+
+    assert seen_root_saved_before_child_fetched.get("value") is True
+
+
 def test_crawl_follows_allowed_host_links_across_multiple_levels(tmp_path):
     adapter_type = getattr(ss, "GenericSourceScraper", None)
     source_type = getattr(ss, "SourceDefinition", None)

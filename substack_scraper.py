@@ -1818,6 +1818,13 @@ class GenericSourceScraper:
                 changed = True
         return str(soup) if changed else html
 
+    def _save_page(self, canonical: str) -> None:
+        """Write a scraped page's current (possibly link-rewritten) HTML to disk."""
+        html = self._rewrite_links(self.raw_html[canonical], canonical)
+        filepath = os.path.join(self.html_save_dir, self.visited[canonical])
+        with open(filepath, "w", encoding="utf-8") as file:
+            file.write(html)
+
     def _discover_pages(self) -> List[str]:
         """Return page URLs selected by the configured source discovery method."""
         discovery = self.source.discovery
@@ -1964,6 +1971,12 @@ class GenericSourceScraper:
                 if not already_visited:
                     self.visited[canonical] = self._html_filename(canonical)
                     self.raw_html[canonical] = html
+                    # Write immediately rather than waiting for the whole
+                    # crawl to finish — on a large multi-level source that
+                    # could be a very long time. Links to pages not yet
+                    # scraped stay as absolute URLs for now; the final pass
+                    # below re-patches every file once everything is known.
+                    self._save_page(canonical)
                 pbar.update(1)
 
                 should_expand = not already_visited and crawl is not None and (
@@ -1982,11 +1995,11 @@ class GenericSourceScraper:
                         pbar.total += len(new_links)
                         pbar.refresh()
 
-        for canonical, filename in self.visited.items():
-            html = self._rewrite_links(self.raw_html[canonical], canonical)
-            filepath = os.path.join(self.html_save_dir, filename)
-            with open(filepath, "w", encoding="utf-8") as file:
-                file.write(html)
+        # Final pass: re-patch every saved page now that every page reachable
+        # this run is known, fixing up links that pointed forward to
+        # something scraped later than the linking page itself.
+        for canonical in self.visited:
+            self._save_page(canonical)
 
 
 # =============================================================================
