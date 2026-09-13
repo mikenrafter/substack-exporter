@@ -1610,6 +1610,60 @@ class GenericSourceScraper:
             raise ValueError("source must be a SourceDefinition or mapping")
         self.source = source
         self.raw_html = {}
+        self.html_save_dir = kwargs.get("html_save_dir") or BASE_HTML_DIR
+        self.md_save_dir = kwargs.get("md_save_dir") or BASE_MD_DIR
+        os.makedirs(self.html_save_dir, exist_ok=True)
+
+    def _discover_pages(self) -> List[str]:
+        """Return page URLs selected by the configured source discovery method."""
+        discovery = self.source.discovery
+        response = requests.get(discovery.index_url)
+        if not response.ok:
+            print(
+                f"Error fetching {discovery.mode} index at "
+                f"{discovery.index_url}: {response.status_code}"
+            )
+            return []
+
+        if discovery.mode == "sitemap":
+            root = ET.fromstring(response.content)
+            return [
+                element.text
+                for element in root.iter(
+                    "{http://www.sitemaps.org/schemas/sitemap/0.9}loc"
+                )
+                if element.text
+            ]
+
+        if discovery.mode == "feed":
+            root = ET.fromstring(response.content)
+            return [
+                link.text
+                for item in root.findall(".//item")
+                for link in [item.find("link")]
+                if link is not None and link.text
+            ]
+
+        soup = BeautifulSoup(response.content, "html.parser")
+        urls = []
+        for link in soup.select(discovery.selector):
+            href = link.get("href")
+            if not href:
+                continue
+            url = urljoin(discovery.index_url, href)
+            if discovery.url_pattern and not discovery.url_pattern.search(url):
+                continue
+            if url not in urls:
+                urls.append(url)
+        return urls
+
+    @staticmethod
+    def _html_filename(url: str) -> str:
+        """Create a stable HTML filename, including a fallback for root URLs."""
+        parsed = urlparse(url)
+        slug = parsed.path.rstrip("/").split("/")[-1] or parsed.netloc
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", unquote(slug))
+        return f"{slug}.html"
 
     def scrape(self, urls: List[str]) -> dict:
         """Fetch pages and retain their raw HTML for a later source formatter."""
@@ -1628,6 +1682,34 @@ class GenericSourceScraper:
             else:
                 print(f"Error fetching {url}: {response.status_code}")
         return self.raw_html
+
+    def scrape_posts(self, number: int = 0) -> None:
+        """Discover and save raw source pages, without Substack-specific parsing."""
+        urls = self._discover_pages()
+        if number < 0:
+            raise ValueError("number must be non-negative")
+        if number:
+            urls = urls[:number]
+
+        print(
+            f"[INFO] Source '{self.source.name}' does not support formatted Markdown; "
+            "saving raw HTML only."
+        )
+        for url in urls:
+            try:
+                response = requests.get(url)
+            except requests.RequestException as exc:
+                print(f"Error fetching {url}: {exc}")
+                continue
+            if not response.ok:
+                print(f"Error fetching {url}: {response.status_code}")
+                continue
+
+            html = response.content.decode("utf-8", errors="replace")
+            self.raw_html[url] = html
+            filepath = os.path.join(self.html_save_dir, self._html_filename(url))
+            with open(filepath, "w", encoding="utf-8") as file:
+                file.write(html)
 
 
 # =============================================================================
@@ -2073,6 +2155,10 @@ Examples:
         help="The directory to save scraped HTML posts."
     )
     parser.add_argument(
+        "--source-config", type=str,
+        help="Path to a JSON configuration for a non-Substack source."
+    )
+    parser.add_argument(
         "-n", "--number", type=int, default=0,
         help="Number of posts to scrape (0 = all posts)."
     )
@@ -2166,6 +2252,20 @@ def main():
 
     if args.html_directory is None:
         args.html_directory = BASE_HTML_DIR
+
+    source_config_path = getattr(args, "source_config", None)
+    if source_config_path:
+        if args.premium:
+            raise ValueError("--source-config cannot be combined with --premium")
+        with open(source_config_path, "r", encoding="utf-8") as file:
+            source = SourceDefinition.from_dict(json.load(file))
+        scraper = GenericSourceScraper(
+            source=source,
+            md_save_dir=args.directory,
+            html_save_dir=args.html_directory,
+        )
+        scraper.scrape_posts(args.number)
+        return
 
     # Determine driver/browser paths based on selected browser
     if args.browser == 'chrome':
