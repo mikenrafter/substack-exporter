@@ -220,17 +220,19 @@ def test_generic_source_uses_browser_driver_when_configured(tmp_path):
 
     driver = Mock()
     driver.page_source = "<html><body>rendered content</body></html>"
+    driver.current_url = "https://notion.example/course-one"
     driver.execute_script.return_value = 42
 
     adapter = adapter_type(
         source=source, html_save_dir=str(tmp_path / "html"), driver=driver
     )
     with patch("substack_scraper.requests.get") as get, patch("substack_scraper.sleep"):
-        html = adapter._fetch_html("https://notion.example/course-one")
+        html, canonical = adapter._fetch_html("https://notion.example/course-one")
 
     get.assert_not_called()
     driver.get.assert_called_once_with("https://notion.example/course-one")
     assert html == "<html><body>rendered content</body></html>"
+    assert canonical == "https://notion.example/course-one"
 
 
 def test_wait_for_render_polls_until_body_text_length_is_stable(tmp_path):
@@ -251,6 +253,127 @@ def test_wait_for_render_polls_until_body_text_length_is_stable(tmp_path):
 
     assert wait.call_count == 4
     assert driver.execute_script.call_count == 4
+
+
+def test_crawl_config_requires_non_empty_allowed_hosts():
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    with pytest.raises(ValueError, match="allowed_hosts"):
+        source_type.from_dict(
+            {
+                "name": "Example",
+                "base_url": "https://notion.example/",
+                "discovery": {"mode": "static", "urls": ["https://notion.example/a"]},
+                "crawl": {"allowed_hosts": []},
+            }
+        )
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {"mode": "static", "urls": ["https://notion.example/a"]},
+            "crawl": {"allowed_hosts": ["notion.example"], "max_depth": 3},
+        }
+    )
+    assert source.crawl.allowed_hosts == frozenset({"notion.example"})
+    assert source.crawl.max_depth == 3
+
+
+def test_crawl_follows_allowed_host_links_across_multiple_levels(tmp_path):
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {"mode": "static", "urls": ["https://notion.example/root"]},
+            "crawl": {"allowed_hosts": ["notion.example"]},
+        }
+    )
+
+    pages = {
+        "https://notion.example/root": (
+            '<a href="https://notion.example/child">child</a>'
+            '<a href="https://app.notion.com/blocked">app link</a>'
+        ),
+        "https://notion.example/child": '<a href="https://notion.example/grandchild">gc</a>',
+        "https://notion.example/grandchild": "<p>leaf page</p>",
+    }
+
+    def fake_get(url):
+        return Mock(ok=True, content=pages[url].encode(), url=url)
+
+    adapter = adapter_type(source=source, html_save_dir=str(tmp_path / "html"))
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)):
+        adapter.scrape_posts()
+
+    saved = {p.name for p in (tmp_path / "html").glob("*.html")}
+    assert saved == {"root.html", "child.html", "grandchild.html"}
+
+
+def test_crawl_rewrites_links_to_locally_saved_pages(tmp_path):
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {"mode": "static", "urls": ["https://notion.example/root"]},
+            "crawl": {"allowed_hosts": ["notion.example"]},
+        }
+    )
+
+    pages = {
+        "https://notion.example/root": (
+            '<a href="https://notion.example/child">child</a>'
+            '<a href="https://app.notion.com/blocked">unreachable</a>'
+        ),
+        "https://notion.example/child": "<p>leaf</p>",
+    }
+
+    def fake_get(url):
+        return Mock(ok=True, content=pages[url].encode(), url=url)
+
+    adapter = adapter_type(source=source, html_save_dir=str(tmp_path / "html"))
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)):
+        adapter.scrape_posts()
+
+    root_html = (tmp_path / "html" / "root.html").read_text(encoding="utf-8")
+    assert 'href="child.html"' in root_html
+    assert 'href="https://app.notion.com/blocked"' in root_html
+
+
+def test_crawl_deduplicates_pages_reached_via_redirecting_links(tmp_path):
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {
+                "mode": "static",
+                "urls": ["https://notion.example/root", "https://notion.example/short-link"],
+            },
+            "crawl": {"allowed_hosts": ["notion.example"]},
+        }
+    )
+
+    def fake_get(url):
+        if url == "https://notion.example/short-link":
+            return Mock(ok=True, content=b"<p>root</p>", url="https://notion.example/root")
+        return Mock(ok=True, content=b"<p>root</p>", url=url)
+
+    adapter = adapter_type(source=source, html_save_dir=str(tmp_path / "html"))
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)):
+        adapter.scrape_posts()
+
+    saved = list((tmp_path / "html").glob("*.html"))
+    assert len(saved) == 1
+    assert saved[0].name == "root.html"
 
 
 def test_min_and_max_delay_are_optional_and_validated(tmp_path):
@@ -454,10 +577,12 @@ def test_cli_generic_source_saves_raw_html_and_reports_unsupported_markdown(
     index_response = Mock(
         ok=True,
         content=b'<a class="article-link" href="/articles/one">one</a>',
+        url="https://journal.example/archive",
     )
     page_response = Mock(
         ok=True,
         content=b"<html><body><h1>One</h1><p>Raw source page</p></body></html>",
+        url="https://journal.example/articles/one",
     )
     with patch("substack_scraper.requests.get", side_effect=[index_response, page_response]):
         ss.main()
@@ -490,6 +615,7 @@ def test_cli_browser_render_uses_driver_and_quits_when_done(monkeypatch, tmp_pat
 
     driver = Mock()
     driver.page_source = "<html><body>rendered</body></html>"
+    driver.current_url = "https://notion.example/course-one"
     driver.execute_script.return_value = 7
 
     with patch.object(

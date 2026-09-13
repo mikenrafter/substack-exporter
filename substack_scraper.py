@@ -9,9 +9,10 @@ import shutil
 import subprocess
 import sys
 from abc import ABC, abstractmethod
+from collections import deque
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
-from typing import List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 from dataclasses import dataclass
 from time import monotonic, sleep, time
 
@@ -59,12 +60,50 @@ class SourceDiscovery:
 
 
 @dataclass(frozen=True)
+class CrawlConfig:
+    """Configuration for following in-page links to additional pages."""
+
+    allowed_hosts: FrozenSet[str]
+    max_depth: Optional[int] = None
+    url_pattern: Optional[re.Pattern] = None
+
+
+def _parse_crawl_config(config: dict) -> Optional[CrawlConfig]:
+    crawl_config = config.get("crawl")
+    if crawl_config is None:
+        return None
+    if not isinstance(crawl_config, dict):
+        raise ValueError("crawl configuration must be a mapping")
+
+    allowed_hosts = crawl_config.get("allowed_hosts")
+    if not isinstance(allowed_hosts, list) or not allowed_hosts:
+        raise ValueError("crawl requires a non-empty allowed_hosts list")
+    for host in allowed_hosts:
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("crawl allowed_hosts must be non-empty strings")
+
+    max_depth = crawl_config.get("max_depth")
+    if max_depth is not None and (not isinstance(max_depth, int) or max_depth < 1):
+        raise ValueError("crawl max_depth must be a positive integer")
+
+    url_pattern = crawl_config.get("url_pattern")
+    if url_pattern is not None:
+        try:
+            url_pattern = re.compile(url_pattern)
+        except (re.error, TypeError) as exc:
+            raise ValueError("crawl url_pattern must be valid regex") from exc
+
+    return CrawlConfig(frozenset(allowed_hosts), max_depth, url_pattern)
+
+
+@dataclass(frozen=True)
 class SourceDefinition:
     """A source-independent description of a publication and its index."""
 
     name: str
     base_url: str
     discovery: SourceDiscovery
+    crawl: Optional[CrawlConfig] = None
 
     @classmethod
     def from_dict(cls, config: dict) -> "SourceDefinition":
@@ -77,6 +116,8 @@ class SourceDefinition:
         base_url = base_url.strip()
         if not base_url.endswith("/"):
             base_url += "/"
+
+        crawl = _parse_crawl_config(config)
 
         discovery_config = config.get("discovery")
         if not isinstance(discovery_config, dict):
@@ -96,6 +137,7 @@ class SourceDefinition:
                 name=config.get("name") or urlparse(base_url).netloc,
                 base_url=base_url,
                 discovery=SourceDiscovery(mode, urls=tuple(urls)),
+                crawl=crawl,
             )
 
         index_url = discovery_config.get("index_url")
@@ -130,6 +172,7 @@ class SourceDefinition:
             name=config.get("name") or urlparse(base_url).netloc,
             base_url=base_url,
             discovery=SourceDiscovery(mode, index_url, selector, url_pattern),
+            crawl=crawl,
         )
 
 
@@ -1628,6 +1671,12 @@ class GenericSourceScraper:
         self.md_save_dir = kwargs.get("md_save_dir") or BASE_MD_DIR
         self.driver = kwargs.get("driver")
         self.render_timeout_seconds = kwargs.get("render_timeout_seconds", 15)
+        # canonical (post-redirect) URL -> saved filename, populated as pages
+        # are scraped; also doubles as the "already visited" set for crawling.
+        self.visited: Dict[str, str] = {}
+        # every href we've resolved -> the canonical URL it led to, so a
+        # second pass can rewrite in-page links to point at local files.
+        self.href_to_canonical: Dict[str, str] = {}
         os.makedirs(self.html_save_dir, exist_ok=True)
 
     def _wait_for_render(self, poll: float = 0.5) -> None:
@@ -1659,26 +1708,60 @@ class GenericSourceScraper:
                 stable_checks = 0
             last_length = length
 
-    def _fetch_html(self, url: str) -> Optional[str]:
-        """Fetch a page's HTML, rendering with the browser driver if configured."""
+    def _fetch_html(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Fetch a page's HTML, rendering with the browser driver if configured.
+
+        Returns (html, canonical_url) — canonical_url is the address the
+        fetch actually landed on after following redirects, which may differ
+        from the requested url (short links, Notion's own redirects, etc.).
+        Returns (None, None) on failure.
+        """
         if self.driver is not None:
             try:
                 self.driver.get(url)
             except Exception as exc:
                 print(f"Error fetching {url}: {exc}")
-                return None
+                return None, None
             self._wait_for_render()
-            return self.driver.page_source
+            return self.driver.page_source, self.driver.current_url
 
         try:
             response = requests.get(url)
         except requests.RequestException as exc:
             print(f"Error fetching {url}: {exc}")
-            return None
+            return None, None
         if not response.ok:
             print(f"Error fetching {url}: {response.status_code}")
-            return None
-        return response.content.decode("utf-8", errors="replace")
+            return None, None
+        return response.content.decode("utf-8", errors="replace"), response.url
+
+    def _extract_links(self, html: str, base_url: str) -> List[str]:
+        """Return every absolute href linked from a page."""
+        soup = BeautifulSoup(html, "html.parser")
+        links = []
+        for link in soup.select("a[href]"):
+            href = link.get("href")
+            if href:
+                links.append(urljoin(base_url, href))
+        return links
+
+    def _rewrite_links(self, html: str, base_url: str) -> str:
+        """Repoint hrefs at their locally-saved copy where one was scraped."""
+        if not self.href_to_canonical:
+            return html
+        soup = BeautifulSoup(html, "html.parser")
+        changed = False
+        for link in soup.select("a[href]"):
+            href = link.get("href")
+            if not href:
+                continue
+            canonical = self.href_to_canonical.get(urljoin(base_url, href))
+            filename = self.visited.get(canonical) if canonical else None
+            if filename:
+                link["href"] = filename
+                changed = True
+        return str(soup) if changed else html
 
     def _discover_pages(self) -> List[str]:
         """Return page URLs selected by the configured source discovery method."""
@@ -1687,7 +1770,7 @@ class GenericSourceScraper:
             return list(discovery.urls)
 
         if discovery.mode == "html":
-            html = self._fetch_html(discovery.index_url)
+            html, _ = self._fetch_html(discovery.index_url)
             if html is None:
                 return []
             soup = BeautifulSoup(html, "html.parser")
@@ -1746,30 +1829,72 @@ class GenericSourceScraper:
             "retaining raw HTML."
         )
         for url in urls:
-            html = self._fetch_html(url)
+            html, canonical = self._fetch_html(url)
             if html is not None:
-                self.raw_html[url] = html
+                self.raw_html[canonical or url] = html
         return self.raw_html
 
+    def _should_follow(self, url: str) -> bool:
+        crawl = self.source.crawl
+        if crawl is None:
+            return False
+        if urlparse(url).netloc not in crawl.allowed_hosts:
+            return False
+        if crawl.url_pattern and not crawl.url_pattern.search(url):
+            return False
+        return True
+
     def scrape_posts(self, number: int = 0) -> None:
-        """Discover and save raw source pages, without Substack-specific parsing."""
-        urls = self._discover_pages()
+        """
+        Discover and save raw source pages, without Substack-specific parsing.
+
+        When the source defines a `crawl` config, this also follows in-page
+        links whose host is in `crawl.allowed_hosts` (multi-level, since a
+        followed page's own links are followed in turn), skipping anything
+        already visited by its post-redirect canonical URL. Once the crawl
+        finishes, every saved page has its internal links rewritten to point
+        at the locally-saved copy where one exists.
+        """
         if number < 0:
             raise ValueError("number must be non-negative")
-        if number:
-            urls = urls[:number]
+
+        seed_urls = self._discover_pages()
+        crawl = self.source.crawl
+        queue = deque((url, 0) for url in seed_urls)
+        enqueued = set(seed_urls)
 
         print(
             f"[INFO] Source '{self.source.name}' does not support formatted Markdown; "
             "saving raw HTML only."
         )
-        for url in urls:
-            html = self._fetch_html(url)
+
+        while queue:
+            if number and len(self.visited) >= number:
+                break
+
+            url, depth = queue.popleft()
+            html, canonical = self._fetch_html(url)
             if html is None:
                 continue
+            canonical = canonical or url
+            self.href_to_canonical[url] = canonical
 
-            self.raw_html[url] = html
-            filepath = os.path.join(self.html_save_dir, self._html_filename(url))
+            if canonical in self.visited:
+                continue
+
+            self.visited[canonical] = self._html_filename(canonical)
+            self.raw_html[canonical] = html
+
+            if crawl is not None and (crawl.max_depth is None or depth < crawl.max_depth):
+                for link in self._extract_links(html, canonical):
+                    if link in enqueued or not self._should_follow(link):
+                        continue
+                    enqueued.add(link)
+                    queue.append((link, depth + 1))
+
+        for canonical, filename in self.visited.items():
+            html = self._rewrite_links(self.raw_html[canonical], canonical)
+            filepath = os.path.join(self.html_save_dir, filename)
             with open(filepath, "w", encoding="utf-8") as file:
                 file.write(html)
 
