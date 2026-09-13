@@ -1714,6 +1714,7 @@ class PremiumSubstackScraper(BaseSubstackScraper):
         download_videos: bool = False,
         min_delay_seconds: float = 6,
         max_delay_seconds: float | None = None,
+        max_reuse: int | None = None,
     ) -> None:
         """
         Initialize the premium scraper with browser automation.
@@ -1736,6 +1737,8 @@ class PremiumSubstackScraper(BaseSubstackScraper):
             raise ValueError("max_delay_seconds must be non-negative")
         if max_delay_seconds is not None and max_delay_seconds < min_delay_seconds:
             raise ValueError("max_delay_seconds must be greater than or equal to min_delay_seconds")
+        if max_reuse is not None and max_reuse < 1:
+            raise ValueError("max_reuse must be at least 1")
 
         # Initialize driver before calling super().__init__ since that fetches URLs
         self.driver = BrowserManager.create_driver(
@@ -1760,6 +1763,8 @@ class PremiumSubstackScraper(BaseSubstackScraper):
 
         self.min_delay_seconds = min_delay_seconds
         self.max_delay_seconds = max_delay_seconds
+        self.max_reuse = max_reuse
+        self.reuse_count = random.randint(1, max_reuse) if max_reuse is not None else 0
         self._last_request_at = None
         super().__init__(
             base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format, download_videos
@@ -1774,6 +1779,26 @@ class PremiumSubstackScraper(BaseSubstackScraper):
             return cookies
         except Exception:
             return {}
+
+    def keep_browser_open(self) -> None:
+        """Keep the persistent browser available for manual identity setup."""
+        print("[INFO] Browser is ready for manual login or identity setup; press Enter to exit.")
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+    def _open_next_scrape_tab(self, url: str) -> None:
+        """Open the next scrape target in a new tab, retaining previous tabs."""
+        existing_handles = list(self.driver.window_handles)
+        self.driver.execute_script("window.open(arguments[0], '_blank');", url)
+        new_handles = [handle for handle in self.driver.window_handles if handle not in existing_handles]
+        if new_handles:
+            next_handle = new_handles[-1]
+        else:
+            next_handle = self.driver.window_handles[-1]
+        self.driver.switch_to.window(next_handle)
+        self.reuse_count = random.randint(1, self.max_reuse)
 
     def login(self) -> None:
         """Log into Substack using Selenium — with robust selectors and manual fallback."""
@@ -1957,6 +1982,11 @@ class PremiumSubstackScraper(BaseSubstackScraper):
         for attempt in range(1, max_attempts + 1):
             try:
                 self._wait_for_request()
+                if self.max_reuse is not None:
+                    if self.reuse_count <= 0:
+                        self._open_next_scrape_tab(url)
+                    else:
+                        self.reuse_count -= 1
                 self.driver.get(url)
 
                 # Wait up to 20s for the post body (or a paywall marker) to appear, instead of a fixed sleep.
@@ -2093,6 +2123,14 @@ Examples:
         "--skip-login", action="store_true",
         help="Skip login (use with --persistent-profile after first login)."
     )
+    premium_group.add_argument(
+        "--launch-browser", action="store_true",
+        help="Launch the persistent browser for manual identity setup without scraping."
+    )
+    premium_group.add_argument(
+        "--max-reuse", type=int, default=None,
+        help="Optional maximum number of scrape targets per browser tab."
+    )
     
     # Driver path options
     driver_group = parser.add_argument_group('Driver options (for troubleshooting)')
@@ -2137,6 +2175,34 @@ def main():
         driver_path = args.edge_driver_path
         browser_path = args.edge_path
 
+    if args.launch_browser:
+        launch_url = args.url or BASE_SUBSTACK_URL
+        if not args.premium:
+            print("[INFO] Launching the premium persistent browser for manual identity setup.")
+        scraper = PremiumSubstackScraper(
+            base_substack_url=launch_url,
+            md_save_dir=args.directory,
+            html_save_dir=args.html_directory,
+            download_images=args.images,
+            browser=args.browser,
+            headless=args.headless,
+            driver_path=driver_path,
+            browser_path=browser_path,
+            user_agent=args.user_agent,
+            use_persistent_profile=True,
+            skip_login=True,
+            frontmatter_format=args.frontmatter,
+            download_videos=args.videos,
+            min_delay_seconds=args.min_delay_seconds,
+            max_delay_seconds=args.max_delay_seconds,
+            max_reuse=args.max_reuse,
+        )
+        print(f"[INFO] Persistent browser launched at {launch_url}; no scraping will be started.")
+        keep_open = getattr(scraper, "keep_browser_open", None)
+        if callable(keep_open):
+            keep_open()
+        return
+
     if args.url:
         if args.premium:
             scraper = PremiumSubstackScraper(
@@ -2155,6 +2221,7 @@ def main():
                 download_videos=args.videos,
                 min_delay_seconds=args.min_delay_seconds,
                 max_delay_seconds=args.max_delay_seconds,
+                max_reuse=args.max_reuse,
             )
         else:
             scraper = SubstackScraper(
@@ -2188,6 +2255,7 @@ def main():
                 download_videos=args.videos,
                 min_delay_seconds=args.min_delay_seconds,
                 max_delay_seconds=args.max_delay_seconds,
+                max_reuse=args.max_reuse,
             )
         else:
             scraper = SubstackScraper(
