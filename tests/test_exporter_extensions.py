@@ -181,6 +181,36 @@ def test_configured_html_discovery_selects_and_filters_article_links(tmp_path):
     assert urls == ["https://journal.example/articles/one"]
 
 
+def test_static_source_definition_requires_non_empty_urls_list():
+    source_type = getattr(ss, "SourceDefinition", None)
+    assert source_type is not None, "source adapter configuration is not implemented"
+
+    with pytest.raises(ValueError, match="urls"):
+        source_type.from_dict(_source(mode="static"))
+
+    source = source_type.from_dict(
+        _source(mode="static", urls=["https://journal.example/courses/one"])
+    )
+    assert source.discovery.mode == "static"
+    assert source.discovery.urls == ("https://journal.example/courses/one",)
+
+
+def test_static_discovery_returns_configured_urls_without_fetching(tmp_path):
+    source_type = getattr(ss, "SourceDefinition", None)
+    assert source_type is not None, "source adapter configuration is not implemented"
+    source = source_type.from_dict(
+        _source(mode="static", urls=["https://journal.example/courses/one"])
+    )
+
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    adapter = adapter_type(source=source, html_save_dir=str(tmp_path / "html"))
+    with patch("substack_scraper.requests.get") as get:
+        urls = adapter._discover_pages()
+
+    get.assert_not_called()
+    assert urls == ["https://journal.example/courses/one"]
+
+
 def test_min_and_max_delay_are_optional_and_validated(tmp_path):
     scraper = ss.SubstackScraper(
         "https://journal.example/p/post",

@@ -55,6 +55,7 @@ class SourceDiscovery:
     index_url: Optional[str] = None
     selector: Optional[str] = None
     url_pattern: Optional[re.Pattern] = None
+    urls: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -81,8 +82,21 @@ class SourceDefinition:
         if not isinstance(discovery_config, dict):
             raise ValueError("source definition requires discovery configuration")
         mode = discovery_config.get("mode")
-        if mode not in ("sitemap", "feed", "html"):
-            raise ValueError("discovery mode must be one of: sitemap, feed, html")
+        if mode not in ("sitemap", "feed", "html", "static"):
+            raise ValueError("discovery mode must be one of: sitemap, feed, html, static")
+
+        if mode == "static":
+            urls = discovery_config.get("urls")
+            if not isinstance(urls, list) or not urls:
+                raise ValueError("static discovery requires a non-empty urls list")
+            for url in urls:
+                if not isinstance(url, str) or not url.strip():
+                    raise ValueError("static discovery urls must be non-empty strings")
+            return cls(
+                name=config.get("name") or urlparse(base_url).netloc,
+                base_url=base_url,
+                discovery=SourceDiscovery(mode, urls=tuple(urls)),
+            )
 
         index_url = discovery_config.get("index_url")
         if index_url is not None:
@@ -1617,6 +1631,9 @@ class GenericSourceScraper:
     def _discover_pages(self) -> List[str]:
         """Return page URLs selected by the configured source discovery method."""
         discovery = self.source.discovery
+        if discovery.mode == "static":
+            return list(discovery.urls)
+
         response = requests.get(discovery.index_url)
         if not response.ok:
             print(
