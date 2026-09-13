@@ -376,6 +376,74 @@ def test_crawl_deduplicates_pages_reached_via_redirecting_links(tmp_path):
     assert saved[0].name == "root.html"
 
 
+def test_crawl_resumes_from_cache_without_refetching(tmp_path):
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {"mode": "static", "urls": ["https://notion.example/root"]},
+            "crawl": {"allowed_hosts": ["notion.example"]},
+        }
+    )
+
+    pages = {
+        "https://notion.example/root": '<a href="https://notion.example/child">child</a>',
+        "https://notion.example/child": "<p>leaf</p>",
+    }
+
+    def fake_get(url):
+        return Mock(ok=True, content=pages[url].encode(), url=url)
+
+    html_dir = str(tmp_path / "html")
+    first_run = adapter_type(source=source, html_save_dir=html_dir)
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)) as get:
+        first_run.scrape_posts()
+    assert get.call_count == 2
+
+    # A second run over the same html_save_dir should serve both pages from
+    # the .raw-cache written by the first run instead of refetching either.
+    second_run = adapter_type(source=source, html_save_dir=html_dir)
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)) as get:
+        second_run.scrape_posts()
+    get.assert_not_called()
+
+    saved = {p.name for p in (tmp_path / "html").glob("*.html")}
+    assert saved == {"root.html", "child.html"}
+
+
+def test_crawl_max_pages_stops_early(tmp_path, capsys):
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {"mode": "static", "urls": ["https://notion.example/root"]},
+            "crawl": {"allowed_hosts": ["notion.example"], "max_pages": 1},
+        }
+    )
+
+    pages = {
+        "https://notion.example/root": '<a href="https://notion.example/child">child</a>',
+        "https://notion.example/child": "<p>leaf</p>",
+    }
+
+    def fake_get(url):
+        return Mock(ok=True, content=pages[url].encode(), url=url)
+
+    adapter = adapter_type(source=source, html_save_dir=str(tmp_path / "html"))
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)):
+        adapter.scrape_posts()
+
+    saved = {p.name for p in (tmp_path / "html").glob("*.html")}
+    assert saved == {"root.html"}
+    assert "max_pages" in capsys.readouterr().out
+
+
 def test_min_and_max_delay_are_optional_and_validated(tmp_path):
     scraper = ss.SubstackScraper(
         "https://journal.example/p/post",

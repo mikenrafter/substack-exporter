@@ -66,6 +66,7 @@ class CrawlConfig:
     allowed_hosts: FrozenSet[str]
     max_depth: Optional[int] = None
     url_pattern: Optional[re.Pattern] = None
+    max_pages: Optional[int] = None
 
 
 def _parse_crawl_config(config: dict) -> Optional[CrawlConfig]:
@@ -93,7 +94,11 @@ def _parse_crawl_config(config: dict) -> Optional[CrawlConfig]:
         except (re.error, TypeError) as exc:
             raise ValueError("crawl url_pattern must be valid regex") from exc
 
-    return CrawlConfig(frozenset(allowed_hosts), max_depth, url_pattern)
+    max_pages = crawl_config.get("max_pages")
+    if max_pages is not None and (not isinstance(max_pages, int) or max_pages < 1):
+        raise ValueError("crawl max_pages must be a positive integer")
+
+    return CrawlConfig(frozenset(allowed_hosts), max_depth, url_pattern, max_pages)
 
 
 @dataclass(frozen=True)
@@ -1678,6 +1683,13 @@ class GenericSourceScraper:
         # second pass can rewrite in-page links to point at local files.
         self.href_to_canonical: Dict[str, str] = {}
         os.makedirs(self.html_save_dir, exist_ok=True)
+        # Raw (pre-rewrite) fetches are cached here so an interrupted crawl
+        # can resume without re-fetching, and so link extraction always sees
+        # the original absolute hrefs rather than a previous run's rewritten
+        # local ones. Public output in html_save_dir gets rewritten links;
+        # this cache never does.
+        self.cache_dir = os.path.join(self.html_save_dir, ".raw-cache")
+        os.makedirs(self.cache_dir, exist_ok=True)
 
     def _wait_for_render(self, poll: float = 0.5) -> None:
         """
@@ -1851,15 +1863,26 @@ class GenericSourceScraper:
         When the source defines a `crawl` config, this also follows in-page
         links whose host is in `crawl.allowed_hosts` (multi-level, since a
         followed page's own links are followed in turn), skipping anything
-        already visited by its post-redirect canonical URL. Once the crawl
-        finishes, every saved page has its internal links rewritten to point
-        at the locally-saved copy where one exists.
+        already visited by its post-redirect canonical URL — the dedup key
+        that keeps a cycle of links from being crawled more than once. An
+        optional `crawl.max_pages` caps the total as a belt-and-suspenders
+        limit beyond that dedup. Once the crawl finishes, every saved page
+        has its internal links rewritten to point at the locally-saved copy
+        where one exists.
+
+        Every fetch is cached (pre-rewrite) under html_save_dir/.raw-cache,
+        keyed by the URL's own filename guess. A rerun over the same
+        html_save_dir loads cache hits instead of re-fetching, so an
+        interrupted crawl resumes rather than starting over — including
+        re-expanding links from cached pages, so resuming still reaches
+        nodes the first run's queue hadn't gotten to yet.
         """
         if number < 0:
             raise ValueError("number must be non-negative")
 
         seed_urls = self._discover_pages()
         crawl = self.source.crawl
+        max_pages = crawl.max_pages if crawl is not None else None
         queue = deque((url, 0) for url in seed_urls)
         enqueued = set(seed_urls)
 
@@ -1868,29 +1891,53 @@ class GenericSourceScraper:
             "saving raw HTML only."
         )
 
-        while queue:
-            if number and len(self.visited) >= number:
-                break
+        with tqdm(total=len(queue), desc="Crawling pages", unit="page") as pbar:
+            while queue:
+                if number and len(self.visited) >= number:
+                    break
+                if max_pages and len(self.visited) >= max_pages:
+                    pbar.write(f"[STOP] crawl.max_pages ({max_pages}) reached")
+                    break
 
-            url, depth = queue.popleft()
-            html, canonical = self._fetch_html(url)
-            if html is None:
-                continue
-            canonical = canonical or url
-            self.href_to_canonical[url] = canonical
+                url, depth = queue.popleft()
+                pbar.set_postfix_str(f"{len(queue)} left to search")
 
-            if canonical in self.visited:
-                continue
-
-            self.visited[canonical] = self._html_filename(canonical)
-            self.raw_html[canonical] = html
-
-            if crawl is not None and (crawl.max_depth is None or depth < crawl.max_depth):
-                for link in self._extract_links(html, canonical):
-                    if link in enqueued or not self._should_follow(link):
+                cache_path = os.path.join(self.cache_dir, self._html_filename(url))
+                if os.path.exists(cache_path):
+                    with open(cache_path, "r", encoding="utf-8") as file:
+                        html = file.read()
+                    canonical = url
+                else:
+                    html, canonical = self._fetch_html(url)
+                    if html is None:
+                        pbar.update(1)
                         continue
-                    enqueued.add(link)
-                    queue.append((link, depth + 1))
+                    canonical = canonical or url
+                    with open(cache_path, "w", encoding="utf-8") as file:
+                        file.write(html)
+
+                self.href_to_canonical[url] = canonical
+                already_visited = canonical in self.visited
+                if not already_visited:
+                    self.visited[canonical] = self._html_filename(canonical)
+                    self.raw_html[canonical] = html
+                pbar.update(1)
+
+                should_expand = not already_visited and crawl is not None and (
+                    crawl.max_depth is None or depth < crawl.max_depth
+                )
+                if should_expand:
+                    new_links = [
+                        link
+                        for link in self._extract_links(html, canonical)
+                        if link not in enqueued and self._should_follow(link)
+                    ]
+                    for link in new_links:
+                        enqueued.add(link)
+                        queue.append((link, depth + 1))
+                    if new_links:
+                        pbar.total += len(new_links)
+                        pbar.refresh()
 
         for canonical, filename in self.visited.items():
             html = self._rewrite_links(self.raw_html[canonical], canonical)
