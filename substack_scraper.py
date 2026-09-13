@@ -1626,7 +1626,59 @@ class GenericSourceScraper:
         self.raw_html = {}
         self.html_save_dir = kwargs.get("html_save_dir") or BASE_HTML_DIR
         self.md_save_dir = kwargs.get("md_save_dir") or BASE_MD_DIR
+        self.driver = kwargs.get("driver")
+        self.render_timeout_seconds = kwargs.get("render_timeout_seconds", 15)
         os.makedirs(self.html_save_dir, exist_ok=True)
+
+    def _wait_for_render(self, poll: float = 0.5) -> None:
+        """
+        Poll until the rendered page's visible text stops growing.
+
+        Client-rendered sites (e.g. Notion) finish document.readyState before
+        their content loads asynchronously, so there's no single DOM-ready
+        event to wait on. Two consecutive stable reads of body.innerText's
+        length is a reasonable proxy for "content has settled" without
+        depending on markup specific to any one source.
+        """
+        end = monotonic() + self.render_timeout_seconds
+        last_length = -1
+        stable_checks = 0
+        while monotonic() < end:
+            sleep(poll)
+            try:
+                length = self.driver.execute_script(
+                    "return document.body ? document.body.innerText.length : 0;"
+                )
+            except Exception:
+                return
+            if length == last_length:
+                stable_checks += 1
+                if stable_checks >= 2:
+                    return
+            else:
+                stable_checks = 0
+            last_length = length
+
+    def _fetch_html(self, url: str) -> Optional[str]:
+        """Fetch a page's HTML, rendering with the browser driver if configured."""
+        if self.driver is not None:
+            try:
+                self.driver.get(url)
+            except Exception as exc:
+                print(f"Error fetching {url}: {exc}")
+                return None
+            self._wait_for_render()
+            return self.driver.page_source
+
+        try:
+            response = requests.get(url)
+        except requests.RequestException as exc:
+            print(f"Error fetching {url}: {exc}")
+            return None
+        if not response.ok:
+            print(f"Error fetching {url}: {response.status_code}")
+            return None
+        return response.content.decode("utf-8", errors="replace")
 
     def _discover_pages(self) -> List[str]:
         """Return page URLs selected by the configured source discovery method."""
@@ -1634,6 +1686,25 @@ class GenericSourceScraper:
         if discovery.mode == "static":
             return list(discovery.urls)
 
+        if discovery.mode == "html":
+            html = self._fetch_html(discovery.index_url)
+            if html is None:
+                return []
+            soup = BeautifulSoup(html, "html.parser")
+            urls = []
+            for link in soup.select(discovery.selector):
+                href = link.get("href")
+                if not href:
+                    continue
+                url = urljoin(discovery.index_url, href)
+                if discovery.url_pattern and not discovery.url_pattern.search(url):
+                    continue
+                if url not in urls:
+                    urls.append(url)
+            return urls
+
+        # Sitemaps and feeds are XML endpoints, not rendered pages — always
+        # fetch them directly rather than through the browser driver.
         response = requests.get(discovery.index_url)
         if not response.ok:
             print(
@@ -1652,27 +1723,13 @@ class GenericSourceScraper:
                 if element.text
             ]
 
-        if discovery.mode == "feed":
-            root = ET.fromstring(response.content)
-            return [
-                link.text
-                for item in root.findall(".//item")
-                for link in [item.find("link")]
-                if link is not None and link.text
-            ]
-
-        soup = BeautifulSoup(response.content, "html.parser")
-        urls = []
-        for link in soup.select(discovery.selector):
-            href = link.get("href")
-            if not href:
-                continue
-            url = urljoin(discovery.index_url, href)
-            if discovery.url_pattern and not discovery.url_pattern.search(url):
-                continue
-            if url not in urls:
-                urls.append(url)
-        return urls
+        root = ET.fromstring(response.content)
+        return [
+            link.text
+            for item in root.findall(".//item")
+            for link in [item.find("link")]
+            if link is not None and link.text
+        ]
 
     @staticmethod
     def _html_filename(url: str) -> str:
@@ -1689,15 +1746,9 @@ class GenericSourceScraper:
             "retaining raw HTML."
         )
         for url in urls:
-            try:
-                response = requests.get(url)
-            except requests.RequestException as exc:
-                print(f"Error fetching {url}: {exc}")
-                continue
-            if response.ok:
-                self.raw_html[url] = response.content.decode("utf-8", errors="replace")
-            else:
-                print(f"Error fetching {url}: {response.status_code}")
+            html = self._fetch_html(url)
+            if html is not None:
+                self.raw_html[url] = html
         return self.raw_html
 
     def scrape_posts(self, number: int = 0) -> None:
@@ -1713,16 +1764,10 @@ class GenericSourceScraper:
             "saving raw HTML only."
         )
         for url in urls:
-            try:
-                response = requests.get(url)
-            except requests.RequestException as exc:
-                print(f"Error fetching {url}: {exc}")
-                continue
-            if not response.ok:
-                print(f"Error fetching {url}: {response.status_code}")
+            html = self._fetch_html(url)
+            if html is None:
                 continue
 
-            html = response.content.decode("utf-8", errors="replace")
             self.raw_html[url] = html
             filepath = os.path.join(self.html_save_dir, self._html_filename(url))
             with open(filepath, "w", encoding="utf-8") as file:
@@ -2176,6 +2221,18 @@ Examples:
         help="Path to a JSON configuration for a non-Substack source."
     )
     parser.add_argument(
+        "--browser-render", action="store_true",
+        help="Render pages with a browser driver before saving (for --source-config "
+             "sites whose content loads client-side, e.g. Notion). No login is "
+             "performed; combine with --browser/--headless/--persistent-profile "
+             "as needed."
+    )
+    parser.add_argument(
+        "--render-timeout-seconds", type=float, default=15,
+        help="Max seconds to wait for a --browser-render page's content to "
+             "stop changing before giving up (default: 15)."
+    )
+    parser.add_argument(
         "-n", "--number", type=int, default=0,
         help="Number of posts to scrape (0 = all posts)."
     )
@@ -2276,12 +2333,32 @@ def main():
             raise ValueError("--source-config cannot be combined with --premium")
         with open(source_config_path, "r", encoding="utf-8") as file:
             source = SourceDefinition.from_dict(json.load(file))
-        scraper = GenericSourceScraper(
-            source=source,
-            md_save_dir=args.directory,
-            html_save_dir=args.html_directory,
-        )
-        scraper.scrape_posts(args.number)
+
+        driver = None
+        if args.browser_render:
+            driver_path = args.chrome_driver_path if args.browser == "chrome" else args.edge_driver_path
+            browser_path = args.chrome_path if args.browser == "chrome" else args.edge_path
+            driver = BrowserManager.create_driver(
+                browser=args.browser,
+                headless=args.headless,
+                driver_path=driver_path,
+                browser_path=browser_path,
+                user_agent=args.user_agent,
+                use_persistent_profile=args.persistent_profile,
+            )
+
+        try:
+            scraper = GenericSourceScraper(
+                source=source,
+                md_save_dir=args.directory,
+                html_save_dir=args.html_directory,
+                driver=driver,
+                render_timeout_seconds=args.render_timeout_seconds,
+            )
+            scraper.scrape_posts(args.number)
+        finally:
+            if driver is not None:
+                driver.quit()
         return
 
     # Determine driver/browser paths based on selected browser

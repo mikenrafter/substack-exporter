@@ -211,6 +211,48 @@ def test_static_discovery_returns_configured_urls_without_fetching(tmp_path):
     assert urls == ["https://journal.example/courses/one"]
 
 
+def test_generic_source_uses_browser_driver_when_configured(tmp_path):
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+    source = source_type.from_dict(
+        _source(mode="static", urls=["https://notion.example/course-one"])
+    )
+
+    driver = Mock()
+    driver.page_source = "<html><body>rendered content</body></html>"
+    driver.execute_script.return_value = 42
+
+    adapter = adapter_type(
+        source=source, html_save_dir=str(tmp_path / "html"), driver=driver
+    )
+    with patch("substack_scraper.requests.get") as get, patch("substack_scraper.sleep"):
+        html = adapter._fetch_html("https://notion.example/course-one")
+
+    get.assert_not_called()
+    driver.get.assert_called_once_with("https://notion.example/course-one")
+    assert html == "<html><body>rendered content</body></html>"
+
+
+def test_wait_for_render_polls_until_body_text_length_is_stable(tmp_path):
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+    source = source_type.from_dict(
+        _source(mode="static", urls=["https://notion.example/course-one"])
+    )
+
+    driver = Mock()
+    driver.execute_script.side_effect = [10, 25, 25, 25]
+
+    adapter = adapter_type(
+        source=source, html_save_dir=str(tmp_path / "html"), driver=driver
+    )
+    with patch("substack_scraper.sleep") as wait:
+        adapter._wait_for_render(poll=0.1)
+
+    assert wait.call_count == 4
+    assert driver.execute_script.call_count == 4
+
+
 def test_min_and_max_delay_are_optional_and_validated(tmp_path):
     scraper = ss.SubstackScraper(
         "https://journal.example/p/post",
@@ -424,3 +466,42 @@ def test_cli_generic_source_saves_raw_html_and_reports_unsupported_markdown(
     assert saved_pages
     assert "Raw source page" in saved_pages[0].read_text(encoding="utf-8")
     assert "formatted Markdown" in capsys.readouterr().out
+
+
+def test_cli_browser_render_uses_driver_and_quits_when_done(monkeypatch, tmp_path):
+    config_path = tmp_path / "source.json"
+    config_path.write_text(
+        json.dumps(_source(mode="static", urls=["https://notion.example/course-one"])),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "substack_scraper.py",
+            "--source-config",
+            str(config_path),
+            "--html-directory",
+            str(tmp_path / "html"),
+            "--browser-render",
+            "--headless",
+        ],
+    )
+
+    driver = Mock()
+    driver.page_source = "<html><body>rendered</body></html>"
+    driver.execute_script.return_value = 7
+
+    with patch.object(
+        ss.BrowserManager, "create_driver", return_value=driver
+    ) as create_driver, patch("substack_scraper.sleep"):
+        ss.main()
+
+    create_driver.assert_called_once()
+    assert create_driver.call_args.kwargs["headless"] is True
+    driver.get.assert_called_once_with("https://notion.example/course-one")
+    driver.quit.assert_called_once()
+
+    saved_pages = list((tmp_path / "html").rglob("*.html"))
+    assert saved_pages
+    assert "rendered" in saved_pages[0].read_text(encoding="utf-8")
