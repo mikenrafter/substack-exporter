@@ -1,6 +1,7 @@
 """Red-phase contract tests for configurable, browser-assisted sources."""
 
 import argparse
+import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -303,3 +304,93 @@ def test_substack_specific_extraction_handlers_remain_available():
     assert hasattr(ss.BaseSubstackScraper, "extract_post_data")
     assert hasattr(ss, "detect_videos_from_soup")
     assert hasattr(ss, "get_video_stream_url")
+
+
+def test_cli_loads_json_source_definition_and_uses_generic_adapter(monkeypatch, tmp_path):
+    config_path = tmp_path / "source.json"
+    config_path.write_text(
+        json.dumps(
+            _source(
+                mode="html",
+                index_url="https://journal.example/archive",
+                selector="a.article-link",
+                url_pattern=r"/articles/",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "substack_scraper.py",
+            "--source-config",
+            str(config_path),
+            "--number",
+            "1",
+        ],
+    )
+
+    captured = {}
+
+    class FakeGenericSourceScraper:
+        def __init__(self, source, **kwargs):
+            captured["source"] = source
+            captured["kwargs"] = kwargs
+
+        def scrape_posts(self, number):
+            captured["number"] = number
+
+    monkeypatch.setattr(ss, "GenericSourceScraper", FakeGenericSourceScraper)
+
+    ss.main()
+
+    assert captured["source"].base_url == "https://journal.example/"
+    assert captured["source"].discovery.selector == "a.article-link"
+    assert captured["number"] == 1
+
+
+def test_cli_generic_source_saves_raw_html_and_reports_unsupported_markdown(
+    monkeypatch, tmp_path, capsys
+):
+    config_path = tmp_path / "source.json"
+    config_path.write_text(
+        json.dumps(
+            _source(
+                mode="html",
+                index_url="https://journal.example/archive",
+                selector="a.article-link",
+                url_pattern=r"/articles/",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "substack_scraper.py",
+            "--source-config",
+            str(config_path),
+            "--html-directory",
+            str(tmp_path / "html"),
+            "--number",
+            "1",
+        ],
+    )
+
+    index_response = Mock(
+        ok=True,
+        content=b'<a class="article-link" href="/articles/one">one</a>',
+    )
+    page_response = Mock(
+        ok=True,
+        content=b"<html><body><h1>One</h1><p>Raw source page</p></body></html>",
+    )
+    with patch("substack_scraper.requests.get", side_effect=[index_response, page_response]):
+        ss.main()
+
+    saved_pages = list((tmp_path / "html").rglob("*.html"))
+    assert saved_pages
+    assert "Raw source page" in saved_pages[0].read_text(encoding="utf-8")
+    assert "formatted Markdown" in capsys.readouterr().out
