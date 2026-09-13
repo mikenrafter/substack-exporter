@@ -1690,6 +1690,41 @@ class GenericSourceScraper:
         # this cache never does.
         self.cache_dir = os.path.join(self.html_save_dir, ".raw-cache")
         os.makedirs(self.cache_dir, exist_ok=True)
+        # Persisted redirect chains, each `{"urls": [requested, ...hops, final]}`.
+        # A cache hit skips the actual redirect-following fetch, so without
+        # this it would have no way to know a cached href had redirected
+        # somewhere else — every hop is recorded (not just first/last) so an
+        # arbitrarily long chain still resolves correctly from any point
+        # in it, e.g. if a later crawl reaches an intermediate hop directly.
+        self.cache_manifest_path = os.path.join(self.cache_dir, "manifest.json")
+        self.redirect_chains: List[List[str]] = []
+        self._canonical_by_url: Dict[str, str] = {}
+        if os.path.exists(self.cache_manifest_path):
+            with open(self.cache_manifest_path, "r", encoding="utf-8") as file:
+                for record in json.load(file):
+                    self._index_redirect_chain(record.get("urls", []))
+
+    def _index_redirect_chain(self, chain: List[str]) -> None:
+        self.redirect_chains.append(chain)
+        canonical = chain[-1]
+        for hop in chain:
+            self._canonical_by_url[hop] = canonical
+
+    def _record_redirect_chain(self, chain: List[str]) -> None:
+        """Persist a fetch's full redirect chain so future cache hits — this
+        run or a resumed one — can still resolve the true canonical URL."""
+        deduped = [u for i, u in enumerate(chain) if i == 0 or u != chain[i - 1]]
+        if len(deduped) < 2:
+            return
+        canonical = deduped[-1]
+        if all(self._canonical_by_url.get(hop) == canonical for hop in deduped):
+            return
+        self._index_redirect_chain(deduped)
+        with open(self.cache_manifest_path, "w", encoding="utf-8") as file:
+            json.dump([{"urls": chain} for chain in self.redirect_chains], file)
+
+    def _resolve_canonical(self, url: str) -> str:
+        return self._canonical_by_url.get(url, url)
 
     def _wait_for_render(self, poll: float = 0.5) -> None:
         """
@@ -1736,7 +1771,11 @@ class GenericSourceScraper:
                 print(f"Error fetching {url}: {exc}")
                 return None, None
             self._wait_for_render()
-            return self.driver.page_source, self.driver.current_url
+            canonical = self.driver.current_url
+            # Selenium exposes no redirect history, only the final URL — a
+            # two-link chain is the best we can record for browser fetches.
+            self._record_redirect_chain([url, canonical])
+            return self.driver.page_source, canonical
 
         try:
             response = requests.get(url)
@@ -1746,6 +1785,10 @@ class GenericSourceScraper:
         if not response.ok:
             print(f"Error fetching {url}: {response.status_code}")
             return None, None
+        history = getattr(response, "history", None)
+        hops = [h.url for h in history if isinstance(getattr(h, "url", None), str)] \
+            if isinstance(history, (list, tuple)) else []
+        self._record_redirect_chain([url, *hops, response.url])
         return response.content.decode("utf-8", errors="replace"), response.url
 
     def _extract_links(self, html: str, base_url: str) -> List[str]:
@@ -1906,7 +1949,7 @@ class GenericSourceScraper:
                 if os.path.exists(cache_path):
                     with open(cache_path, "r", encoding="utf-8") as file:
                         html = file.read()
-                    canonical = url
+                    canonical = self._resolve_canonical(url)
                 else:
                     html, canonical = self._fetch_html(url)
                     if html is None:

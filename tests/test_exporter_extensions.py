@@ -376,6 +376,56 @@ def test_crawl_deduplicates_pages_reached_via_redirecting_links(tmp_path):
     assert saved[0].name == "root.html"
 
 
+def test_resumed_run_still_dedupes_a_page_reached_via_a_redirecting_link(tmp_path):
+    """
+    A cache hit skips the actual redirect-following fetch, so without a
+    persisted record of where a href previously redirected to, a resumed
+    run has no way to know "short-link" and "root" are the same page —
+    it would treat the cache hit as its own canonical and duplicate it.
+    """
+    adapter_type = getattr(ss, "GenericSourceScraper", None)
+    source_type = getattr(ss, "SourceDefinition", None)
+
+    source = source_type.from_dict(
+        {
+            "name": "Example",
+            "base_url": "https://notion.example/",
+            "discovery": {
+                "mode": "static",
+                "urls": ["https://notion.example/root", "https://notion.example/short-link"],
+            },
+            "crawl": {"allowed_hosts": ["notion.example"]},
+        }
+    )
+
+    def fake_get(url):
+        if url == "https://notion.example/short-link":
+            return Mock(ok=True, content=b"<p>root</p>", url="https://notion.example/root")
+        return Mock(ok=True, content=b"<p>root</p>", url=url)
+
+    html_dir = str(tmp_path / "html")
+    first_run = adapter_type(source=source, html_save_dir=html_dir)
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)):
+        first_run.scrape_posts()
+
+    manifest_path = tmp_path / "html" / ".raw-cache" / "manifest.json"
+    assert manifest_path.exists()
+    chains = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert {"urls": ["https://notion.example/short-link", "https://notion.example/root"]} in chains
+
+    # Second run: both seeds hit the cache, but the redirecting one must
+    # still resolve to the same canonical page instead of becoming a
+    # second, duplicate output file.
+    second_run = adapter_type(source=source, html_save_dir=html_dir)
+    with patch("substack_scraper.requests.get", side_effect=lambda u: fake_get(u)) as get:
+        second_run.scrape_posts()
+    get.assert_not_called()
+
+    saved = list((tmp_path / "html").glob("*.html"))
+    assert len(saved) == 1
+    assert saved[0].name == "root.html"
+
+
 def test_crawl_resumes_from_cache_without_refetching(tmp_path):
     adapter_type = getattr(ss, "GenericSourceScraper", None)
     source_type = getattr(ss, "SourceDefinition", None)
