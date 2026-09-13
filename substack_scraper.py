@@ -1000,6 +1000,7 @@ class BrowserManager:
 
 class BaseSubstackScraper(ABC):
     min_delay_seconds: float = 6
+    max_delay_seconds: float | None = None
     _last_request_at: float | None = None
 
     def __init__(
@@ -1063,10 +1064,13 @@ class BaseSubstackScraper(ABC):
             self.post_urls: List[str] = self.get_all_post_urls()
 
     def _wait_for_request(self) -> None:
-        """Wait until the configured minimum interval since the last request."""
+        """Wait until the configured interval since the last request."""
         now = monotonic()
         if self._last_request_at is not None:
-            sleep_for = self.min_delay_seconds - (now - self._last_request_at)
+            delay = self.min_delay_seconds
+            if self.max_delay_seconds is not None and self.min_delay_seconds > 0:
+                delay = random.uniform(self.min_delay_seconds, self.max_delay_seconds)
+            sleep_for = delay - (now - self._last_request_at)
             if sleep_for > 0:
                 sleep(sleep_for)
         self._last_request_at = monotonic()
@@ -1640,11 +1644,17 @@ class SubstackScraper(BaseSubstackScraper):
         frontmatter_format: str = "legacy",
         download_videos: bool = False,
         min_delay_seconds: float = 6,
+        max_delay_seconds: float | None = None,
         source: Optional[SourceDefinition] = None,
     ):
         if min_delay_seconds < 0:
             raise ValueError("min_delay_seconds must be non-negative")
+        if max_delay_seconds is not None and max_delay_seconds < 0:
+            raise ValueError("max_delay_seconds must be non-negative")
+        if max_delay_seconds is not None and max_delay_seconds < min_delay_seconds:
+            raise ValueError("max_delay_seconds must be greater than or equal to min_delay_seconds")
         self.min_delay_seconds = min_delay_seconds
+        self.max_delay_seconds = max_delay_seconds
         self._last_request_at = None
         super().__init__(
             base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format,
@@ -1703,6 +1713,7 @@ class PremiumSubstackScraper(BaseSubstackScraper):
         frontmatter_format: str = "legacy",
         download_videos: bool = False,
         min_delay_seconds: float = 6,
+        max_delay_seconds: float | None = None,
     ) -> None:
         """
         Initialize the premium scraper with browser automation.
@@ -1719,6 +1730,13 @@ class PremiumSubstackScraper(BaseSubstackScraper):
             use_persistent_profile: Reuse browser profile across runs (saves login)
             skip_login: Skip login if using a pre-authenticated profile
         """
+        if min_delay_seconds < 0:
+            raise ValueError("min_delay_seconds must be non-negative")
+        if max_delay_seconds is not None and max_delay_seconds < 0:
+            raise ValueError("max_delay_seconds must be non-negative")
+        if max_delay_seconds is not None and max_delay_seconds < min_delay_seconds:
+            raise ValueError("max_delay_seconds must be greater than or equal to min_delay_seconds")
+
         # Initialize driver before calling super().__init__ since that fetches URLs
         self.driver = BrowserManager.create_driver(
             browser=browser,
@@ -1740,9 +1758,8 @@ class PremiumSubstackScraper(BaseSubstackScraper):
             self.driver.get(base_substack_url)
             sleep(3)
 
-        if min_delay_seconds < 0:
-            raise ValueError("min_delay_seconds must be non-negative")
         self.min_delay_seconds = min_delay_seconds
+        self.max_delay_seconds = max_delay_seconds
         self._last_request_at = None
         super().__init__(
             base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format, download_videos
@@ -2040,6 +2057,14 @@ Examples:
         help="Download videos from posts/notes. Requires --premium (authentication needed)."
     )
     parser.add_argument(
+        "--min-delay-seconds", type=float, default=6,
+        help="Minimum delay between requests (default: 6)."
+    )
+    parser.add_argument(
+        "--max-delay-seconds", type=float, default=None,
+        help="Optional maximum delay between requests; enables random jitter."
+    )
+    parser.add_argument(
         "--frontmatter", type=str, default="legacy", choices=["legacy", "mdx"],
         help="Header format for scraped markdown. 'legacy' (default) uses the original "
              "'# title / **date** / **Likes:** N' block. 'mdx' emits YAML frontmatter "
@@ -2129,6 +2154,7 @@ def main():
                 frontmatter_format=args.frontmatter,
                 download_videos=args.videos,
                 min_delay_seconds=args.min_delay_seconds,
+                max_delay_seconds=args.max_delay_seconds,
             )
         else:
             scraper = SubstackScraper(
@@ -2138,6 +2164,8 @@ def main():
                 download_images=args.images,
                 frontmatter_format=args.frontmatter,
                 download_videos=args.videos,
+                min_delay_seconds=args.min_delay_seconds,
+                max_delay_seconds=args.max_delay_seconds,
             )
         scraper.scrape_posts(args.number)
 
@@ -2158,6 +2186,8 @@ def main():
                 skip_login=args.skip_login,
                 frontmatter_format=args.frontmatter,
                 download_videos=args.videos,
+                min_delay_seconds=args.min_delay_seconds,
+                max_delay_seconds=args.max_delay_seconds,
             )
         else:
             scraper = SubstackScraper(
@@ -2167,6 +2197,8 @@ def main():
                 download_images=args.images,
                 frontmatter_format=args.frontmatter,
                 download_videos=args.videos,
+                min_delay_seconds=args.min_delay_seconds,
+                max_delay_seconds=args.max_delay_seconds,
             )
         scraper.scrape_posts(num_posts_to_scrape=NUM_POSTS_TO_SCRAPE)
 
