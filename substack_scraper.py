@@ -10,8 +10,9 @@ import subprocess
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 from typing import List, Optional, Tuple
+from dataclasses import dataclass
 from time import monotonic, sleep, time
 
 import html2text
@@ -44,6 +45,78 @@ BASE_VIDEO_DIR: str = "substack_videos"
 HTML_TEMPLATE: str = "author_template.html"
 JSON_DATA_DIR: str = "data"
 NUM_POSTS_TO_SCRAPE: int = 0
+
+
+@dataclass(frozen=True)
+class SourceDiscovery:
+    """Configuration for finding pages belonging to a source."""
+
+    mode: str
+    index_url: Optional[str] = None
+    selector: Optional[str] = None
+    url_pattern: Optional[re.Pattern] = None
+
+
+@dataclass(frozen=True)
+class SourceDefinition:
+    """A source-independent description of a publication and its index."""
+
+    name: str
+    base_url: str
+    discovery: SourceDiscovery
+
+    @classmethod
+    def from_dict(cls, config: dict) -> "SourceDefinition":
+        if not isinstance(config, dict):
+            raise ValueError("source definition must be a mapping")
+
+        base_url = config.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError("source definition requires base_url")
+        base_url = base_url.strip()
+        if not base_url.endswith("/"):
+            base_url += "/"
+
+        discovery_config = config.get("discovery")
+        if not isinstance(discovery_config, dict):
+            raise ValueError("source definition requires discovery configuration")
+        mode = discovery_config.get("mode")
+        if mode not in ("sitemap", "feed", "html"):
+            raise ValueError("discovery mode must be one of: sitemap, feed, html")
+
+        index_url = discovery_config.get("index_url")
+        if index_url is not None:
+            if not isinstance(index_url, str) or not index_url.strip():
+                raise ValueError("discovery index_url must be a non-empty string")
+            index_url = urljoin(base_url, index_url)
+        elif mode == "sitemap":
+            index_url = urljoin(base_url, "sitemap.xml")
+        elif mode == "feed":
+            index_url = urljoin(base_url, "feed.xml")
+
+        selector = discovery_config.get("selector")
+        url_pattern = discovery_config.get("url_pattern")
+        if mode == "html":
+            index_url = index_url or base_url
+            selector = selector or "a[href]"
+            if not isinstance(selector, str) or not selector.strip():
+                raise ValueError("html discovery selector must be a non-empty string")
+            if url_pattern is not None:
+                try:
+                    url_pattern = re.compile(url_pattern)
+                except (re.error, TypeError) as exc:
+                    raise ValueError("html discovery url_pattern must be valid regex") from exc
+        elif url_pattern is not None:
+            try:
+                url_pattern = re.compile(url_pattern)
+            except (re.error, TypeError) as exc:
+                raise ValueError("discovery url_pattern must be valid regex") from exc
+
+        return cls(
+            name=config.get("name") or urlparse(base_url).netloc,
+            base_url=base_url,
+            discovery=SourceDiscovery(mode, index_url, selector, url_pattern),
+        )
 
 
 def resolve_redirect_url(url: str, timeout: int = 10) -> str:
@@ -937,11 +1010,15 @@ class BaseSubstackScraper(ABC):
         download_images: bool = False,
         frontmatter_format: str = "legacy",
         download_videos: bool = False,
+        source: Optional[SourceDefinition] = None,
     ):
         if frontmatter_format not in ("legacy", "mdx"):
             raise ValueError("frontmatter_format must be 'legacy' or 'mdx'")
         self.frontmatter_format: str = frontmatter_format
         self.download_videos: bool = download_videos
+        if source is not None and not isinstance(source, SourceDefinition):
+            raise ValueError("source must be a SourceDefinition")
+        self.source = source
 
         # Resolve redirects for short-links like /home/post/p-XXXXXX
         resolved_url = resolve_redirect_url(base_substack_url)
@@ -955,6 +1032,9 @@ class BaseSubstackScraper(ABC):
 
         if self.is_single_post:
             base_substack_url = get_publication_url(base_substack_url)
+
+        if self.source is not None:
+            base_substack_url = self.source.base_url
 
         if not base_substack_url.endswith("/"):
             base_substack_url += "/"
@@ -979,7 +1059,7 @@ class BaseSubstackScraper(ABC):
         if self.is_single_post:
             self.post_urls: List[str] = [original_url]
         else:
-            self.keywords: List[str] = ["about", "archive", "podcast"]
+            self.keywords: List[str] = [] if self.source is not None else ["about", "archive", "podcast"]
             self.post_urls: List[str] = self.get_all_post_urls()
 
     def _wait_for_request(self) -> None:
@@ -993,14 +1073,25 @@ class BaseSubstackScraper(ABC):
 
     def get_all_post_urls(self) -> List[str]:
         """Attempts to fetch URLs from sitemap.xml, falling back to feed.xml if necessary."""
+        if self.source is not None:
+            mode = self.source.discovery.mode
+            if mode == "html":
+                return self.fetch_urls_from_html()
+            if mode == "feed":
+                return self.fetch_urls_from_feed(use_source=True)
+            return self.fetch_urls_from_sitemap(use_source=True)
         urls = self.fetch_urls_from_sitemap()
         if not urls:
             urls = self.fetch_urls_from_feed()
         return self.filter_urls(urls, self.keywords)
 
-    def fetch_urls_from_sitemap(self) -> List[str]:
+    def fetch_urls_from_sitemap(self, use_source: bool = False) -> List[str]:
         """Fetches URLs from sitemap.xml."""
-        sitemap_url = f"{self.base_substack_url}sitemap.xml"
+        sitemap_url = (
+            self.source.discovery.index_url
+            if use_source and self.source is not None
+            else f"{self.base_substack_url}sitemap.xml"
+        )
         self._wait_for_request()
         response = requests.get(sitemap_url)
 
@@ -1012,10 +1103,15 @@ class BaseSubstackScraper(ABC):
         urls = [element.text for element in root.iter('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')]
         return urls
 
-    def fetch_urls_from_feed(self) -> List[str]:
+    def fetch_urls_from_feed(self, use_source: bool = False) -> List[str]:
         """Fetches URLs from feed.xml."""
-        print('Falling back to feed.xml. This will only contain up to the 22 most recent posts.')
-        feed_url = f"{self.base_substack_url}feed.xml"
+        if not use_source:
+            print('Falling back to feed.xml. This will only contain up to the 22 most recent posts.')
+        feed_url = (
+            self.source.discovery.index_url
+            if use_source and self.source is not None
+            else f"{self.base_substack_url}feed.xml"
+        )
         self._wait_for_request()
         response = requests.get(feed_url)
 
@@ -1030,6 +1126,28 @@ class BaseSubstackScraper(ABC):
             if link is not None and link.text:
                 urls.append(link.text)
 
+        return urls
+
+    def fetch_urls_from_html(self) -> List[str]:
+        """Fetch and select article links from a configured HTML index."""
+        discovery = self.source.discovery
+        self._wait_for_request()
+        response = requests.get(discovery.index_url)
+        if not response.ok:
+            print(f"Error fetching HTML index at {discovery.index_url}: {response.status_code}")
+            return []
+
+        soup = BeautifulSoup(response.content, "html.parser")
+        urls = []
+        for link in soup.select(discovery.selector):
+            href = link.get("href")
+            if not href:
+                continue
+            resolved = urljoin(discovery.index_url, href)
+            if discovery.url_pattern and not discovery.url_pattern.search(resolved):
+                continue
+            if resolved not in urls:
+                urls.append(resolved)
         return urls
 
     @staticmethod
@@ -1475,6 +1593,40 @@ class BaseSubstackScraper(ABC):
 
 
 # =============================================================================
+# GENERIC SOURCE SCRAPER
+# =============================================================================
+
+class GenericSourceScraper:
+    """Minimal source adapter for pages without Substack-specific extraction."""
+
+    def __init__(self, source: SourceDefinition, *args, **kwargs):
+        if isinstance(source, dict):
+            source = SourceDefinition.from_dict(source)
+        if not isinstance(source, SourceDefinition):
+            raise ValueError("source must be a SourceDefinition or mapping")
+        self.source = source
+        self.raw_html = {}
+
+    def scrape(self, urls: List[str]) -> dict:
+        """Fetch pages and retain their raw HTML for a later source formatter."""
+        print(
+            f"[INFO] Source '{self.source.name}' does not support formatted Markdown; "
+            "retaining raw HTML."
+        )
+        for url in urls:
+            try:
+                response = requests.get(url)
+            except requests.RequestException as exc:
+                print(f"Error fetching {url}: {exc}")
+                continue
+            if response.ok:
+                self.raw_html[url] = response.content.decode("utf-8", errors="replace")
+            else:
+                print(f"Error fetching {url}: {response.status_code}")
+        return self.raw_html
+
+
+# =============================================================================
 # FREE CONTENT SCRAPER
 # =============================================================================
 
@@ -1488,13 +1640,15 @@ class SubstackScraper(BaseSubstackScraper):
         frontmatter_format: str = "legacy",
         download_videos: bool = False,
         min_delay_seconds: float = 6,
+        source: Optional[SourceDefinition] = None,
     ):
         if min_delay_seconds < 0:
             raise ValueError("min_delay_seconds must be non-negative")
         self.min_delay_seconds = min_delay_seconds
         self._last_request_at = None
         super().__init__(
-            base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format, download_videos
+            base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format,
+            download_videos, source
         )
 
     def get_url_soup(self, url: str, max_attempts: int = 5) -> Optional[BeautifulSoup]:
